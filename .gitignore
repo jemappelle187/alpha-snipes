@@ -1,0 +1,18 @@
+node_modules/
+.env
+.env.local
+*.log
+dist/
+build/
+.DS_Store
+
+# PM2 logs
+logs/
+
+# Alpha registry (keep in git for backup, but can be excluded if contains sensitive data)
+# alpha/registry.json
+
+# Backup files
+*_backup.ts
+index_backup.ts
+

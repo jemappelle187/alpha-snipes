@@ -1,0 +1,188 @@
+═══════════════════════════════════════════════════════════════════════════════
+                    🧹 CLEAN PM2 SETUP - FOLLOW THESE STEPS
+═══════════════════════════════════════════════════════════════════════════════
+
+⚠️  CURRENT ISSUE: 2 bot instances running (causing Telegram conflict)
+
+✅ SOLUTION: Stop all instances, then start cleanly with PM2
+
+
+📋 STEP-BY-STEP COMMANDS (Copy & Paste in Your Terminal):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+STEP 1: Install PM2 (if not already done)
+────────────────────────────────────────────────────────────────────────────
+
+sudo npm install -g pm2
+
+Enter your password when prompted.
+
+
+STEP 2: Navigate to Project
+────────────────────────────────────────────────────────────────────────────
+
+cd "/Users/emmanuelyeboah/Projects/Alpha Snipes"
+
+
+STEP 3: Stop ALL existing bot instances
+────────────────────────────────────────────────────────────────────────────
+
+pkill -f "tsx index.ts"
+
+Wait 2 seconds, then verify they're stopped:
+
+pgrep -f "tsx index.ts"
+
+(Should return nothing. If it returns PIDs, run pkill again)
+
+
+STEP 4: Start with PM2
+────────────────────────────────────────────────────────────────────────────
+
+pm2 start ecosystem.config.js
+
+
+STEP 5: Save PM2 configuration
+────────────────────────────────────────────────────────────────────────────
+
+pm2 save
+
+
+STEP 6: Setup auto-start on reboot
+────────────────────────────────────────────────────────────────────────────
+
+pm2 startup
+
+⚠️  IMPORTANT: This will print a "sudo env PATH..." command.
+   COPY that ENTIRE command and RUN it.
+
+After running the sudo command, save again:
+
+pm2 save
+
+
+STEP 7: View logs to verify
+────────────────────────────────────────────────────────────────────────────
+
+pm2 logs alpha-snipes-paper
+
+You should see:
+  📄 PAPER MODE: No real transactions will be sent
+  🚀 Alpha Snipes Bot Starting... 📄 PAPER MODE
+  👀 Watching active: 8zkJmeQS1J3GUkPvfboeT76bwojADU6dyTZsCBiMdCVp
+
+Press Ctrl+C to exit logs (bot continues running)
+
+
+STEP 8: Verify status
+────────────────────────────────────────────────────────────────────────────
+
+pm2 status
+
+Should show:
+┌────────────────────┬────┬─────────┬──────┬───────┬────────┬─────────┐
+│ Name               │ id │ mode    │ ↺    │ status│ cpu    │ memory  │
+├────────────────────┼────┼─────────┼──────┼───────┼────────┼─────────┤
+│ alpha-snipes-paper │ 0  │ fork    │ 0    │ online│ 0.3%   │ 45.2mb  │
+└────────────────────┴────┴─────────┴──────┴───────┴────────┴─────────┘
+
+✅ "online" means it's running!
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ AFTER PM2 IS RUNNING - TEST TELEGRAM COMMANDS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Open Telegram and send these commands in your DM (or command chat):
+
+
+/alpha_list
+
+Expected response:
+  🎯 Active Alphas (currently trading):
+    • 8zkJmeQS1J3GUkPvfboeT76bwojADU6dyTZsCBiMdCVp
+
+  🧪 Candidates (being scored):
+    • 7xKXtg2CWiaqJ1vFqUvGMEPNvZp8p5K92iFNQ2cxCGpX
+      Signals: 0 | Last: never
+
+
+/alpha_add 9ABcdEfGhIjK1LmN2oPqRsT3UvWxY4Za5bCdE6fGhIjK
+
+Expected response:
+  👀 Candidate added:
+  9ABcdEfGhIjK1LmN2oPqRsT3UvWxY4Za5bCdE6fGhIjK
+  
+  The bot will now monitor this wallet...
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📚 PM2 COMMANDS YOU'LL USE OFTEN:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pm2 status                     # Check if bot is running
+pm2 logs alpha-snipes-paper    # View live logs
+pm2 restart alpha-snipes-paper # Restart bot (after .env changes)
+pm2 stop alpha-snipes-paper    # Stop bot
+pm2 monit                      # Live monitoring dashboard
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 WHAT HAPPENS NEXT (Auto-Pilot):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Bot watches your active alpha (8zkJmeQS1...)
+2. When they trade a new token:
+   → [PAPER] 👀 Alpha touched new mint...
+   → Rug checks run
+   → [PAPER] ✅ Bought... (if checks pass)
+   → [PAPER] 🎯 TP / 🛑 Exit / 📈 PnL
+
+3. Bot watches your candidates
+4. When they touch new mints first:
+   → [PAPER] 🧪 Candidate signal (score +1)
+   → After 2 signals in 24h:
+   → ✅ AUTO-PROMOTED to active!
+   → Bot starts trading them!
+
+All alerts appear in your Telegram channel!
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+💡 PRO TIP:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add 5-10 alpha candidates today and let the bot discover which ones are
+actually good. The Alpha Verifier automates your Solscan checking routine!
+
+Example alpha candidates to try (or use your own):
+  /alpha_add 7xKXtg2CWiaqJ1vFqUvGMEPNvZp8p5K92iFNQ2cxCGpX
+  /alpha_add 9ABcdEfGhIjK1LmN2oPqRsT3UvWxY4Za5bCdE6fGhIjK
+  /alpha_add 5FgHiJkLmN1oPqR2StU3vWxY4ZaBcD5eF6gHiJ7kLmNo
+
+(Replace with real wallet addresses you want to test)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📖 FULL GUIDES AVAILABLE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  START_PM2.md         Complete PM2 setup guide
+  ALPHA_VERIFIER.md    How auto-discovery works
+  GETTING_STARTED.md   Full 4-phase guide
+  QUICK_REFERENCE.md   Command cheat sheet
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎉 YOU'RE ALMOST THERE! Just follow the steps above! 🎉
+
+═══════════════════════════════════════════════════════════════════════════════
+
+
