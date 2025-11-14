@@ -4,8 +4,8 @@
  * Uses batch fetching to avoid rate limits
  */
 
-const { Connection, PublicKey } = require('@solana/web3.js');
-require('dotenv/config');
+import { Connection, PublicKey } from '@solana/web3.js';
+import 'dotenv/config';
 
 const MINT = process.argv[2] || 'o1fGAh5v4zd9y8QAMn1BZY4rZGrbkNjiABCmwyemoon';
 const ALPHA_WALLET = process.argv[3] || '8zkJmeQS1J3GUkPvfboeT76bwojADU6dyTZsCBiMdCVp';
