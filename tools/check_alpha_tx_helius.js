@@ -107,6 +107,7 @@ async function main() {
             }
             console.log('\n' + '═'.repeat(80));
           }
+        }
         
         // Small delay to avoid rate limits
         await new Promise(resolve => setTimeout(resolve, 200));
@@ -200,6 +201,7 @@ async function main() {
               console.log('\n' + '═'.repeat(80));
             }
           }
+        }
         
         // Small delay to avoid rate limits
         await new Promise(resolve => setTimeout(resolve, 200));
