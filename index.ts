@@ -2304,11 +2304,16 @@ async function manageExit(mintStr: string) {
           const durationSec = Math.floor((Date.now() - pos.entryTime) / 1000);
           
           const tag = IS_PAPER ? '[PAPER] ' : '';
+          // Get token name for display
+          const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+          const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+          const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+          
           await tgQueue.enqueue(() => bot.sendMessage(
             TELEGRAM_CHAT_ID,
-            `${tag}🛑 Trailing stop exit: <code>${short(mintStr)}</code>\n` +
+            `${tag}🛑 Trailing stop exit: <b>${tokenDisplay}</b>\n` +
             `Exit: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}`,
-            linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid })
+            linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
           ), { chatId: TELEGRAM_CHAT_ID });
           
           const summaryLine = solUsd ? 
