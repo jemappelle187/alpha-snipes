@@ -81,6 +81,14 @@ const PARTIAL_TP_PCT = Math.max(0, Math.min(1, parseFloat(process.env.PARTIAL_TP
 // Priority fee (Jito-lite)
 const CU_UNIT_PRICE = parseInt(process.env.CU_UNIT_PRICE_MICROLAMPORTS || '5000', 10);
 const CU_LIMIT = parseInt(process.env.CU_LIMIT || '800000', 10);
+const JITO_PRIORITY_FEE_MULTIPLIER = parseFloat(process.env.JITO_PRIORITY_FEE_MULTIPLIER || '1.0');
+const MAX_PRIORITY_FEE_LAMPORTS = parseInt(process.env.MAX_PRIORITY_FEE_LAMPORTS || '50000000', 10); // 0.05 SOL max
+
+// Helius configuration
+// Extract API key from URL if embedded, or use separate env var
+const heliusKeyFromUrl = RPC_URL.match(/[?&]api-key=([^&]+)/)?.[1] || '';
+const HELIUS_API_KEY = process.env.HELIUS_API_KEY || heliusKeyFromUrl;
+const USE_HELIUS_RPC = RPC_URL.includes('helius') && (HELIUS_API_KEY || heliusKeyFromUrl);
 
 // Rug checks
 const REQUIRE_AUTH_REVOKED = (process.env.REQUIRE_AUTHORITY_REVOKED || 'true') === 'true';
@@ -1262,9 +1270,19 @@ async function getJupiterSwapTransaction(quoteResponse: any): Promise<string> {
       userPublicKey: walletKeypair.publicKey.toBase58(),
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
-      priorityLevelWithMaxLamports: {
-        maxLamports: CU_LIMIT * CU_UNIT_PRICE,
-      },
+      priorityLevelWithMaxLamports: (() => {
+        // maxLamports: Maximum total priority fee Jupiter can use
+        // Jupiter will select appropriate priority level up to this cap
+        // Typical swap uses ~200k-300k CU, so we calculate based on that
+        // Formula: (typical CU usage * price per CU) * multiplier, capped at MAX
+        const typicalCUUsage = 250000; // Typical swap CU usage
+        const calculatedMax = Math.floor(
+          (typicalCUUsage * CU_UNIT_PRICE * JITO_PRIORITY_FEE_MULTIPLIER) / 1e6
+        );
+        return {
+          maxLamports: Math.min(calculatedMax, MAX_PRIORITY_FEE_LAMPORTS),
+        };
+      })(),
     }),
   });
   if (!res.ok) throw new Error(`Jupiter swap failed: ${res.statusText}`);
@@ -2457,12 +2475,21 @@ async function main() {
   const mode = IS_PAPER ? '📄 PAPER MODE' : '💰 LIVE MODE';
   console.log(`🚀 Alpha Snipes Bot Starting... ${mode}`);
   console.log(`🔧 SOLANA_RPC_URL: ${RPC_URL}`);
+  if (USE_HELIUS_RPC) {
+    const maskedKey = HELIUS_API_KEY ? `${HELIUS_API_KEY.slice(0, 8)}...${HELIUS_API_KEY.slice(-4)}` : 'extracted from URL';
+    console.log(`✅ Helius RPC enabled (API key: ${maskedKey})`);
+  } else if (RPC_URL.includes('helius') && !HELIUS_API_KEY) {
+    console.log(`⚠️  Helius RPC URL detected but no API key found`);
+  }
   console.log(`📍 Wallet: ${walletKeypair.publicKey.toBase58()}`);
   console.log(`💰 Buy size: ${BUY_SOL} SOL`);
   console.log(`🎯 Early TP: ${EARLY_TP_PCT * 100}%${PARTIAL_TP_PCT > 0 ? ` (Partial: ${PARTIAL_TP_PCT * 100}%)` : ''}`);
   console.log(`🛑 Trailing stop: ${TRAIL_STOP_PCT * 100}%`);
   console.log(`🛡️ Sentry window: ${SENTRY_WINDOW_SEC}s (max DD: ${SENTRY_MAX_DD * 100}%)`);
-  console.log(`⚙️  Priority: ${CU_UNIT_PRICE} microLamports, ${CU_LIMIT} CU limit`);
+  const typicalCUUsage = 250000;
+  const calculatedMax = Math.floor((typicalCUUsage * CU_UNIT_PRICE * JITO_PRIORITY_FEE_MULTIPLIER) / 1e6);
+  const maxFeeLamports = Math.min(calculatedMax, MAX_PRIORITY_FEE_LAMPORTS);
+  console.log(`⚙️  Priority: ${CU_UNIT_PRICE} microLamports/CU, ${CU_LIMIT} CU limit, max ${maxFeeLamports / 1e9} SOL (multiplier: ${JITO_PRIORITY_FEE_MULTIPLIER}x)`);
   console.log(`🪲 Debug: TX=${DEBUG_TX} | toTelegram=${DEBUG_TO_TELEGRAM}`);
   console.log(`🔧 DNS servers in use: ${(dns.getServers?.() || []).join(', ') || 'default'}`);
   logJupiterBases();
