@@ -1023,7 +1023,10 @@ bot.onText(/^\/force_sell\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) 
 
 // Force buy command (paper mode testing)
 bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, async (msg, match) => {
-  if (!isAdmin(msg)) return;
+  if (!isAdmin(msg)) {
+    console.log(`[CMD] force_buy rejected: chatId=${msg.chat.id}, userId=${msg.from?.id}, chatType=${msg.chat.type}`);
+    return;
+  }
   const mintStr = getMatchParam(match, 1);
   const customAmount = match[2] ? parseFloat(match[2]) : null;
   
