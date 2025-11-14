@@ -772,9 +772,13 @@ bot.onText(/^\/open$/, async (msg) => {
   const lines: string[] = [];
   
   for (const [mintStr, pos] of Object.entries(openPositions)) {
+    // Get token name for display (quick fetch with long cache)
+    const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+    const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+    
     const currentPrice = await getQuotePrice(pos.mint).catch(() => null);
     if (!currentPrice || !isValidPrice(currentPrice)) {
-      lines.push(`<code>${short(mintStr)}</code>  [fetching...]`);
+      lines.push(`<b>${tokenDisplay}</b>  [fetching...]`);
       continue;
     }
     
@@ -783,7 +787,7 @@ bot.onText(/^\/open$/, async (msg) => {
     const priceRatio = Math.max(currentPrice / pos.entryPrice, pos.entryPrice / currentPrice);
     if (priceRatio > 10) {
       lines.push(
-        `<code>${short(mintStr)}</code>  [price unreliable]\n` +
+        `<b>${tokenDisplay}</b>  [price unreliable]\n` +
         `  Entry: ${formatSol(pos.entryPrice)}  |  Current: [unreliable]\n` +
         `  ⏳ EARLY TP  |  <code>${esc(String(Math.floor((Date.now() - pos.entryTime) / 60000)))}</code>m\n`
       );
@@ -798,7 +802,7 @@ bot.onText(/^\/open$/, async (msg) => {
     const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
     
     lines.push(
-      `<code>${short(mintStr)}</code>  <code>${esc(sign + uPct.toFixed(1))}</code>%  |  ${sign}${formatUsd(uUsd)}\n` +
+      `<b>${tokenDisplay}</b>  <code>${esc(sign + uPct.toFixed(1))}</code>%  |  ${sign}${formatUsd(uUsd)}\n` +
       `  Entry: ${formatSol(pos.entryPrice)}  |  Now: ${formatSol(currentPrice)}\n` +
       `  ${phaseLabel}  |  <code>${esc(String(durationMin))}</code>m\n`
     );
