@@ -2182,12 +2182,13 @@ async function manageExit(mintStr: string) {
         const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
         const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
         
-        await alert(
+        await tgQueue.enqueue(() => bot.sendMessage(
+          TELEGRAM_CHAT_ID,
           `🛡️ Max loss protection: <b>${tokenDisplay}</b>\n` +
           `Loss: ${currentLossPct.toFixed(1)}% (limit: ${MAX_LOSS_PCT}%)\n` +
           `Forcing exit to prevent further losses.`,
           linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
-        );
+        ), { chatId: TELEGRAM_CHAT_ID });
         
         recordTrade({
           t: Date.now(),
