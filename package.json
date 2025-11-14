@@ -3,10 +3,17 @@
   "version": "1.0.0",
   "description": "Telegram bot for Alpha Snipes channel",
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "test:telegram": "tsx test_telegram.ts",
     "start": "tsx index.ts",
-    "dev": "tsx watch index.ts"
+    "dev": "tsx watch index.ts",
+    "stop": "./scripts/stop.sh",
+    "pm2:start": "pm2 start 'tsx index.ts' --name alpha-snipes-paper --time",
+    "logs": "pm2 logs alpha-snipes-paper --lines 80",
+    "docs:check": "node -e \"require('fs').readdirSync('./docs'); console.log('✅ Docs OK');\""
   },
   "dependencies": {
     "dotenv": "^16.3.1",
@@ -21,6 +28,10 @@
     "@types/node": "^20.10.6",
     "@types/bs58": "^4.0.4",
     "@types/node-telegram-bot-api": "^0.64.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/alpha-snipes.git"
+  },
+  "license": "MIT"
 }
-

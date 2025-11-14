@@ -55,6 +55,9 @@ nano .env  # or use your favorite editor
 **Optional tuning:**
 - `BUY_SOL` - Start with 0.001-0.01 for live testing
 - `CU_UNIT_PRICE_MICROLAMPORTS` - Increase to 8000-10000 for faster fills
+- `PARTIAL_TP_PCT=0.5` - Partial take-profit example
+
+Partial take-profit allows the bot to sell a portion (e.g. 50%) at early TP and trail the remainder for additional upside.
 
 ## 3️⃣ Fund Your Wallet
 
@@ -88,16 +91,23 @@ Check your Telegram channel for the startup message!
    - 🎯 Manages exit (30% TP → 20% trailing stop)
 3. All actions are reported to your Telegram channel
 
+The bot now includes:
+• 💓 Heartbeat every 15 minutes (proof of life)
+• 🤫 Silent watchdog alert after 60 minutes of inactivity
+• 💰 Persistent ledger tracking (data/trades.jsonl)
+• ⚡ Real-time PnL and open position tracking (/pnl, /open)
+
 ## 📊 Telegram Alerts
 
-You'll receive alerts for:
-- 👀 New mint detected
-- ⛔️ Rug check failures
-- ✅ Successful buys with TX link
-- 🎯 Early take-profit triggers
-- 🛑 Trailing stop exits
-- 🚨 Sentry emergency exits
-- 🛡️ Sentry window status
+You’ll now receive alerts with clean inline buttons:
+[🪙 Mint] [👤 Alpha] [🔗 TX]
+Each button links directly to Solscan for instant viewing.
+
+## 💬 Bot Commands
+/status – Show live bot heartbeat and market pulse  
+/pnl – View realized profit/loss summary  
+/pnl 24h – View last 24h results  
+/open – View unrealized PnL of open positions
 
 ## ⚙️ Quick Tuning
 
@@ -134,6 +144,8 @@ pm2 logs alpha-snipes  # View logs
 pm2 stop alpha-snipes  # Stop bot
 ```
 
+For 24/7 uptime and remote visibility, integrate Oracle Cloud monitoring (planned in upcoming release).
+
 ## 🐛 Quick Troubleshooting
 
 | Issue | Fix |
@@ -142,6 +154,7 @@ pm2 stop alpha-snipes  # Stop bot
 | "Cannot find module" | Run `npm install` again |
 | No alpha trades detected | Verify ALPHA_WALLET is active and correct |
 | "Failed to get recent blockhash" | RPC rate limited - use premium RPC |
+| "Too Many Requests" or "Bad Request" | Jupiter rate-limited — bot automatically cools down and retries |
 
 ## 📚 Full Documentation
 
@@ -158,4 +171,3 @@ pm2 stop alpha-snipes  # Stop bot
 ---
 
 **Ready to snipe! 🎯** Watch your Telegram channel for live updates.
-

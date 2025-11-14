@@ -867,9 +867,7 @@ bot.onText(/^\/force_exit\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) 
     }
     
     const tx = await swapTokenForSOL(pos.mint, pos.qty);
-    const pnl = ((price - pos.entryPrice) / pos.entryPrice) * 100;
     const solUsd = await getSolUsd();
-    const priceUsd = price * (solUsd || 0);
     
     // Calculate compact summary
     const entrySol = pos.costSol;
@@ -877,7 +875,11 @@ bot.onText(/^\/force_exit\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) 
     const pnlSol = exitSol - entrySol;
     const entryUsd = entrySol * (solUsd || 0);
     const exitUsd = exitSol * (solUsd || 0);
-    const pnlUsd = pnlSol * (solUsd || 0);
+    const pnlUsd = exitUsd - entryUsd; // USD PnL = exit USD - entry USD
+    
+    // Calculate percentage from actual exit vs entry (not quote price)
+    const pnl = entrySol > 0 ? (pnlSol / entrySol) * 100 : 0;
+    const priceUsd = price * (solUsd || 0);
     const durationSec = Math.floor((Date.now() - pos.entryTime) / 1000);
     
     const tag = '[PAPER] ';
@@ -963,9 +965,7 @@ bot.onText(/^\/force_sell\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) 
     }
     
     const tx = await swapTokenForSOL(pos.mint, pos.qty);
-    const pnl = ((price - pos.entryPrice) / pos.entryPrice) * 100;
     const solUsd = await getSolUsd();
-    const priceUsd = price * (solUsd || 0);
     
     // Calculate compact summary
     const entrySol = pos.costSol;
@@ -973,7 +973,11 @@ bot.onText(/^\/force_sell\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) 
     const pnlSol = exitSol - entrySol;
     const entryUsd = entrySol * (solUsd || 0);
     const exitUsd = exitSol * (solUsd || 0);
-    const pnlUsd = pnlSol * (solUsd || 0);
+    const pnlUsd = exitUsd - entryUsd; // USD PnL = exit USD - entry USD
+    
+    // Calculate percentage from actual exit vs entry (not quote price)
+    const pnl = entrySol > 0 ? (pnlSol / entrySol) * 100 : 0;
+    const priceUsd = price * (solUsd || 0);
     const durationSec = Math.floor((Date.now() - pos.entryTime) / 1000);
     
     const tag = '[PAPER] ';
@@ -1431,10 +1435,38 @@ async function getQuotePrice(mint: PublicKey): Promise<number | null> {
       dbg(`[PRICE] Attempting BUY quote fallback for ${shortMint} (0.1 SOL → tokens)`);
       const buyQuote = await getJupiterQuote(SOL, mint.toBase58(), 0.1 * 1e9, 1000);
       if (buyQuote && buyQuote.outAmount) {
-        const tokensOut = Number(buyQuote.outAmount);
-        if (tokensOut > 0) {
-          // Price = SOL spent / tokens received
-          const price = (0.1 * 1e9) / tokensOut / 1e9; // Convert to SOL per token
+        const tokensOutRaw = Number(buyQuote.outAmount);
+        if (tokensOutRaw > 0) {
+          // Get token decimals to normalize the amount
+          let tokenDecimals = 9; // Default assumption
+          try {
+            const mintInfo = await connection.getParsedAccountInfo(mint);
+            const parsed = mintInfo.value?.data;
+            if (parsed && 'parsed' in parsed && parsed.parsed?.info?.decimals !== undefined) {
+              tokenDecimals = Number(parsed.parsed.info.decimals);
+            }
+          } catch {
+            // If we can't get decimals, assume 9 (most common)
+            dbg(`[PRICE] Could not fetch decimals for ${shortMint}, assuming 9`);
+          }
+          
+          // Normalize: outAmount is in smallest unit, convert to UI units
+          const tokensOutUI = tokensOutRaw / Math.pow(10, tokenDecimals);
+          
+          // Price = SOL spent / tokens received (in UI units)
+          // This gives us SOL per token, matching the SELL quote format
+          let price = 0.1 / tokensOutUI;
+          dbg(`[PRICE] BUY quote fallback: raw=${tokensOutRaw.toExponential(3)}, decimals=${tokenDecimals}, UI=${tokensOutUI.toExponential(3)}, price=${price.toExponential(3)} SOL/token`);
+          
+          // Sanity check: if price is unreasonably small (< 1e-10), likely decimals mismatch
+          // Many pump.fun tokens have 0 decimals, so try that
+          if (price < 1e-10 && tokenDecimals === 9) {
+            dbg(`[PRICE] Price too small with 9 decimals, trying 0 decimals assumption`);
+            const tokensOutUI0 = tokensOutRaw; // Assume 0 decimals
+            price = 0.1 / tokensOutUI0;
+            dbg(`[PRICE] BUY quote with 0 decimals: ${price.toExponential(3)} SOL/token`);
+          }
+          
           dbg(`[PRICE] BUY quote fallback success for ${shortMint}: ${price.toExponential(3)} SOL/token`);
           return price;
         }
@@ -2128,9 +2160,7 @@ async function manageExit(mintStr: string) {
       if (price <= trailTrigger) {
         try {
           const tx = await swapTokenForSOL(pos.mint, pos.qty);
-          const pnl = ((price - pos.entryPrice) / pos.entryPrice) * 100;
           const solUsd = await getSolUsd();
-          const priceUsd = price * (solUsd || 0);
           
           // Calculate compact summary with entry/exit/PnL in USD
           const entrySol = pos.costSol;
@@ -2138,7 +2168,11 @@ async function manageExit(mintStr: string) {
           const pnlSol = exitSol - entrySol;
           const entryUsd = entrySol * (solUsd || 0);
           const exitUsd = exitSol * (solUsd || 0);
-          const pnlUsd = pnlSol * (solUsd || 0);
+          const pnlUsd = exitUsd - entryUsd; // USD PnL = exit USD - entry USD
+          
+          // Calculate percentage from actual exit vs entry (not quote price)
+          const pnl = entrySol > 0 ? (pnlSol / entrySol) * 100 : 0;
+          const priceUsd = price * (solUsd || 0);
           const durationSec = Math.floor((Date.now() - pos.entryTime) / 1000);
           
           const tag = IS_PAPER ? '[PAPER] ' : '';
@@ -2215,7 +2249,6 @@ async function postBuySentry(mintStr: string) {
       try {
         const tx = await swapTokenForSOL(pos.mint, pos.qty);
         const solUsd = await getSolUsd();
-        const pnl = -dd * 100; // negative PnL (drawdown)
         
         // Calculate compact summary with entry/exit/PnL in USD
         const entrySol = pos.costSol;
@@ -2223,7 +2256,10 @@ async function postBuySentry(mintStr: string) {
         const pnlSol = exitSol - entrySol;
         const entryUsd = entrySol * (solUsd || 0);
         const exitUsd = exitSol * (solUsd || 0);
-        const pnlUsd = pnlSol * (solUsd || 0);
+        const pnlUsd = exitUsd - entryUsd; // USD PnL = exit USD - entry USD
+        
+        // Calculate percentage from actual exit vs entry (not drawdown estimate)
+        const pnl = entrySol > 0 ? (pnlSol / entrySol) * 100 : 0;
         const durationSec = Math.floor((Date.now() - pos.entryTime) / 1000);
         
         const tag = IS_PAPER ? '[PAPER] ' : '';

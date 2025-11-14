@@ -1,11 +1,14 @@
 {
   "active": [
     "8zkJmeQS1J3GUkPvfboeT76bwojADU6dyTZsCBiMdCVp",
-    "97vkwMX4TBpmushUCgtLfeGC83sshXpEEhxmZiP8bWor"
+    "97vkwMX4TBpmushUCgtLfeGC83sshXpEEhxmZiP8bWor",
+    "4rNgv2QXwyfWh9QJaJg8YJ6qjpqqaXRHBJVUXTAUUHrA",
+    "E4U2YLnTJwX9CfyVnnGZsRzfnYBREhn2FF3xtW88S6y1"
   ],
   "candidates": [
     "7xKXtg2CWiaqJ1vFqUvGMEPNvZp8p5K92iFNQ2cxCGpX",
-    "4rNgv2QXwyfWh9QJaJg8YJ6qjpqqaXRHBJVUXTAUUHrA"
+    "H8fbGMcJrtTpztW9eUdcwHqcmoXs5XjHwsc1pQzoLP5G",
+    "4nhiGFxjgRg9awfrtAiVCm1NL9UZ66bXSoqzRYV3zQo7"
   ],
   "scores": {
     "97vkwMX4TBpmushUCgtLfeGC83sshXpEEhxmZiP8bWor": {
@@ -13,8 +16,23 @@
       "lastSeen": 1762685995767
     },
     "4rNgv2QXwyfWh9QJaJg8YJ6qjpqqaXRHBJVUXTAUUHrA": {
-      "signals": 1,
-      "lastSeen": 1762686530087
+      "signals": 2,
+      "lastSeen": 1762688300454,
+      "lastPromotedAt": 1762688300456
+    },
+    "H8fbGMcJrtTpztW9eUdcwHqcmoXs5XjHwsc1pQzoLP5G": {
+      "signals": 0
+    },
+    "E4U2YLnTJwX9CfyVnnGZsRzfnYBREhn2FF3xtW88S6y1": {
+      "signals": 3,
+      "lastSeen": 1762867708641,
+      "lastPromotedAt": 1762867708644
+    },
+    "4nhiGFxjgRg9awfrtAiVCm1NL9UZ66bXSoqzRYV3zQo7": {
+      "signals": 0
+    },
+    "8zkJmeQS1J3GUkPvfboeT76bwojADU6dyTZsCBiMdCVp": {
+      "signals": 0
     }
   }
 }

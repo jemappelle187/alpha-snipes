@@ -1,40 +1,23 @@
-// index.ts - Alpha Snipes Bot with Alpha Verifier & PM2 Support
+// index.ts - Alpha Snipes Bot with Jito-lite Priority & Rug Checks
 import 'dotenv/config';
 import { Connection, PublicKey, Keypair, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import fetch from 'node-fetch';
-import TelegramBot from 'node-telegram-bot-api';
 import { basicRugChecks } from './lib/rug_checks.js';
 import { priorityIxs } from './lib/priority.js';
-import { JUP_QUOTE_BASE, JUP_SWAP_BASE } from './lib/jupiter_endpoints.js';
-import {
-  readRegistry,
-  addCandidate,
-  removeCandidate,
-  removeActive,
-  addActive,
-  bumpScore,
-  maybePromote,
-  manualPromote,
-  listAll,
-} from './alpha/alpha_registry.js';
-import { tgQueue } from './lib/telegram_rate.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Configuration
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Trading Mode
-const TRADE_MODE = (process.env.TRADE_MODE || 'paper').toLowerCase();
+const TRADE_MODE = (process.env.TRADE_MODE || 'paper').toLowerCase(); // 'paper' or 'live'
 const IS_PAPER = TRADE_MODE !== 'live';
 
 const RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN!;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
-const COMMAND_CHAT_ID = process.env.COMMAND_CHAT_ID || TELEGRAM_CHAT_ID;
-const ADMIN_USER_ID = process.env.ADMIN_USER_ID || '';
-const LEGACY_ALPHA_WALLET = process.env.ALPHA_WALLET || '';
-
+const ALPHA_WALLET = process.env.ALPHA_WALLET!;
 const BUY_SOL = parseFloat(process.env.BUY_SOL || '0.01');
 const EARLY_TP_PCT = parseFloat(process.env.EARLY_TP_PCT || '0.3');
 const TRAIL_STOP_PCT = parseFloat(process.env.TRAIL_STOP_PCT || '0.2');
@@ -50,16 +33,14 @@ const MAX_PRICE_IMPACT_BPS = parseInt(process.env.MAX_PRICE_IMPACT_BPS || '3000'
 const SENTRY_WINDOW_SEC = parseInt(process.env.SENTRY_WINDOW_SEC || '120', 10);
 const SENTRY_MAX_DD = parseFloat(process.env.SENTRY_MAX_DRAWDOWN_PCT || '0.22');
 
-// Alpha Verifier Settings
-const PROMOTION_THRESHOLD = 2; // signals needed to auto-promote
-const PROMOTION_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-
 // Wallet
 let walletKeypair: Keypair;
 if (IS_PAPER) {
+  // Paper mode: use dummy keypair (never broadcasts)
   walletKeypair = Keypair.generate();
   console.log('📄 PAPER MODE: No real transactions will be sent');
 } else {
+  // Live mode: require valid private key
   try {
     const privKey = process.env.WALLET_PRIVATE_KEY || '';
     if (!privKey) {
@@ -75,28 +56,6 @@ if (IS_PAPER) {
 // Connection
 const connection = new Connection(RPC_URL, 'confirmed');
 
-// Telegram Bot (with polling for commands)
-const bot = new TelegramBot(TELEGRAM_TOKEN, {
-  polling: {
-    interval: 1500,              // 1.5s between polls (backup; long-poll handles most)
-    params: { 
-      timeout: 50,               // long-poll up to 50s
-      limit: 100,                // batch up to 100 updates
-      allowed_updates: ['message', 'callback_query'] // Only updates we use
-    }
-  }
-});
-
-// Clear webhook to ensure polling mode
-(async () => {
-  try {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true`);
-    console.log('✅ Telegram webhook cleared (polling mode ensured)');
-  } catch (e) {
-    console.warn('⚠️ Failed to clear webhook:', e);
-  }
-})();
-
 // State
 const seenMints = new Set<string>();
 const openPositions: Record<
@@ -110,169 +69,35 @@ const openPositions: Record<
   }
 > = {};
 
-// Dynamic Alpha Management
-let ACTIVE_ALPHAS: string[] = [];
-let CANDIDATE_ALPHAS: string[] = [];
-const subscriptions = new Map<string, number>();
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// Telegram Helpers
+// Telegram Alert
 // ═══════════════════════════════════════════════════════════════════════════════
-
-function isAdmin(msg: TelegramBot.Message): boolean {
-  if (!ADMIN_USER_ID) return true; // If not set, allow all (backward compat)
-  return (
-    String(msg.chat.id) === String(COMMAND_CHAT_ID) &&
-    String(msg.from?.id) === String(ADMIN_USER_ID)
-  );
-}
 
 async function alert(text: string) {
+  // Add [PAPER] tag in paper mode
   const tag = IS_PAPER ? '[PAPER] ' : '';
   const fullText = text.startsWith('[PAPER]') ? text : `${tag}${text}`;
-
+  
   try {
-    await tgQueue.enqueue(() => bot.sendMessage(TELEGRAM_CHAT_ID, fullText, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    }), { chatId: TELEGRAM_CHAT_ID });
+    const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: fullText,
+        parse_mode: 'HTML',
+        disable_web_page_preview: 'true',
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      console.error('Telegram error:', data);
+    }
   } catch (err: any) {
     console.error('Alert failed:', err.message || err);
   }
 }
-
-async function sendCommand(chatId: string | number, text: string) {
-  try {
-    await tgQueue.enqueue(() => bot.sendMessage(chatId, text, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    }), { chatId });
-  } catch (err: any) {
-    console.error('Command response failed:', err.message || err);
-  }
-}
-
-function getMatchParam(match: RegExpExecArray | null, index: number): string | null {
-  if (!match) return null;
-  const value = match[index];
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Telegram Command Handlers
-// ═══════════════════════════════════════════════════════════════════════════════
-
-bot.onText(/^\/alpha_add\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) => {
-  if (!isAdmin(msg)) return;
-  const addr = getMatchParam(match, 1);
-  if (!addr) {
-    await sendCommand(msg.chat.id, '❌ Usage: /alpha_add <wallet>');
-    return;
-  }
-  addCandidate(addr);
-  await sendCommand(msg.chat.id, `👀 <b>Candidate added:</b>\n<code>${addr}</code>\n\nThe bot will now monitor this wallet and score it based on early mint touches.`);
-});
-
-bot.onText(/^\/alpha_add_active\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) => {
-  if (!isAdmin(msg)) return;
-  const addr = getMatchParam(match, 1);
-  if (!addr) {
-    await sendCommand(msg.chat.id, '❌ Usage: /alpha_add_active <wallet>');
-    return;
-  }
-  addActive(addr);
-  refreshAlphas();
-  await sendCommand(msg.chat.id, `✅ <b>Active alpha added:</b>\n<code>${addr}</code>\n\nThe bot will now copy trades from this wallet.`);
-});
-
-bot.onText(/^\/alpha_list$/, async (msg) => {
-  if (!isAdmin(msg)) return;
-  const { active, candidates, scores } = listAll();
-  
-  const activeList = active.length
-    ? active.map((a) => `  • <code>${a}</code>`).join('\n')
-    : '  (none)';
-  
-  const candidateList = candidates.length
-    ? candidates
-        .map((a) => {
-          const score = scores[a];
-          return `  • <code>${a}</code>\n    Signals: ${score?.signals || 0} | Last: ${score?.lastSeen ? new Date(score.lastSeen).toLocaleString() : 'never'}`;
-        })
-        .join('\n')
-    : '  (none)';
-
-  await sendCommand(
-    msg.chat.id,
-    `<b>🎯 Active Alphas</b> (currently trading):\n${activeList}\n\n<b>🧪 Candidates</b> (being scored):\n${candidateList}\n\n<i>Candidates auto-promote after ${PROMOTION_THRESHOLD} signals in 24h</i>`
-  );
-});
-
-bot.onText(/^\/alpha_remove\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) => {
-  if (!isAdmin(msg)) return;
-  const addr = getMatchParam(match, 1);
-  if (!addr) {
-    await sendCommand(msg.chat.id, '❌ Usage: /alpha_remove <wallet>');
-    return;
-  }
-  removeCandidate(addr);
-  removeActive(addr);
-  refreshAlphas();
-  await sendCommand(msg.chat.id, `🗑️ <b>Removed:</b>\n<code>${addr}</code>`);
-});
-
-bot.onText(/^\/alpha_promote\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/, async (msg, match) => {
-  if (!isAdmin(msg)) return;
-  const addr = getMatchParam(match, 1);
-  if (!addr) {
-    await sendCommand(msg.chat.id, '❌ Usage: /alpha_promote <wallet>');
-    return;
-  }
-  const promoted = manualPromote(addr);
-  if (promoted) {
-    refreshAlphas();
-    await sendCommand(msg.chat.id, `✅ <b>Promoted to active:</b>\n<code>${addr}</code>`);
-  } else {
-    await sendCommand(msg.chat.id, `❌ Cannot promote <code>${addr}</code>\nEither not a candidate or already active.`);
-  }
-});
-
-bot.onText(/^\/help$/, async (msg) => {
-  if (!isAdmin(msg)) return;
-  await sendCommand(
-    msg.chat.id,
-    `<b>📚 Alpha Snipes Commands</b>\n\n` +
-      `<b>/alpha_add</b> &lt;address&gt;\n  Add wallet as candidate (auto-scores)\n\n` +
-      `<b>/alpha_add_active</b> &lt;address&gt;\n  Add wallet directly to active (skip scoring)\n\n` +
-      `<b>/alpha_list</b>\n  Show active alphas and candidates with scores\n\n` +
-      `<b>/alpha_promote</b> &lt;address&gt;\n  Manually promote candidate to active\n\n` +
-      `<b>/alpha_remove</b> &lt;address&gt;\n  Remove from candidates or active\n\n` +
-      `<b>/help</b>\n  Show this message`
-  );
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Alpha Registry Management
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function refreshAlphas() {
-  const reg = readRegistry();
-  ACTIVE_ALPHAS = reg.active;
-  CANDIDATE_ALPHAS = reg.candidates;
-  
-  // If registry is empty and we have a legacy alpha wallet, add it
-  if (ACTIVE_ALPHAS.length === 0 && CANDIDATE_ALPHAS.length === 0 && LEGACY_ALPHA_WALLET) {
-    console.log(`Adding legacy ALPHA_WALLET to active: ${LEGACY_ALPHA_WALLET}`);
-    addActive(LEGACY_ALPHA_WALLET);
-    ACTIVE_ALPHAS = [LEGACY_ALPHA_WALLET];
-  }
-}
-
-// Initial load
-refreshAlphas();
-
-// Refresh every 30 seconds
-setInterval(refreshAlphas, 30_000);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Jupiter V6 API Helpers
@@ -284,14 +109,14 @@ async function getJupiterQuote(
   amount: number,
   slippageBps: number = 50
 ): Promise<any> {
-  const url = `${JUP_QUOTE_BASE}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
+  const url = `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Jupiter quote failed: ${res.statusText}`);
   return await res.json();
 }
 
 async function getJupiterSwapTransaction(quoteResponse: any): Promise<string> {
-  const url = JUP_SWAP_BASE;
+  const url = 'https://quote-api.jup.ag/v6/swap';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -339,6 +164,7 @@ async function paperBuy(mint: PublicKey, solAmount: number): Promise<PaperExec> 
     throw new Error('No route found (paper mode)');
   }
 
+  // Simulate execution using quote (no actual transaction)
   return { txid: '[PAPER-BUY]', outAmount: quote.outAmount };
 }
 
@@ -349,6 +175,7 @@ async function paperSell(mint: PublicKey, tokenAmount: bigint): Promise<PaperExe
     throw new Error('No sell route found (paper mode)');
   }
 
+  // Simulate execution using quote (no actual transaction)
   return { txid: '[PAPER-SELL]', outAmount: '0', solOutLamports: Number(quote.outAmount) };
 }
 
@@ -394,10 +221,7 @@ async function swapSOLforToken(
   }
 }
 
-async function swapTokenForSOL(
-  mint: PublicKey,
-  tokenAmount: bigint
-): Promise<{ txid: string; solOutLamports?: number }> {
+async function swapTokenForSOL(mint: PublicKey, tokenAmount: bigint): Promise<{ txid: string; solOutLamports?: number }> {
   if (IS_PAPER) {
     return await paperSell(mint, tokenAmount);
   } else {
@@ -416,7 +240,7 @@ async function getQuotePrice(mint: PublicKey): Promise<number | null> {
     if (!quote || !quote.outAmount) return null;
     const solOut = Number(quote.outAmount) / 1e9;
     if (solOut <= 0) return null;
-    return solOut / 0.001;
+    return solOut / 0.001; // price per token in SOL
   } catch {
     return null;
   }
@@ -435,78 +259,42 @@ async function reportPaperPnL(mintStr: string, entrySol: number, exitSolLamports
   const pnl = exitSol - entrySol;
   const pct = (pnl / entrySol) * 100;
   const emoji = pnl >= 0 ? '📈' : '📉';
-
+  
   await alert(
     `${emoji} PnL for <code>${mintStr.slice(0, 8)}...</code>\n` +
-      `Entry: ${entrySol.toFixed(4)} SOL\n` +
-      `Exit: ${exitSol.toFixed(4)} SOL\n` +
-      `Profit: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(4)} SOL (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)`
+    `Entry: ${entrySol.toFixed(4)} SOL\n` +
+    `Exit: ${exitSol.toFixed(4)} SOL\n` +
+    `Profit: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(4)} SOL (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)`
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Alpha Wallet Watching with Log Subscriptions
+// Alpha Wallet Watcher
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function watchAddress(addr: string, label: 'active' | 'candidate') {
-  if (subscriptions.has(addr)) return;
+async function watchAlphaWallet() {
+  const alphaPk = new PublicKey(ALPHA_WALLET);
+  let lastSig = '';
 
-  try {
-    const pk = new PublicKey(addr);
-    const subId = connection.onLogs(
-      pk,
-      async (logs) => {
-        if (logs.err) return;
-        await handleAlphaTransaction(logs.signature, addr, label).catch((err) => {
-          console.error(`Error handling ${label} tx:`, err);
-        });
-      },
-      'confirmed'
-    );
-    subscriptions.set(addr, subId);
-    console.log(`👀 Watching ${label}: ${addr}`);
-  } catch (err) {
-    console.error(`Failed to watch ${addr}:`, err);
-  }
-}
-
-function unwatchAddress(addr: string) {
-  const subId = subscriptions.get(addr);
-  if (subId !== undefined) {
-    connection.removeOnLogsListener(subId);
-    subscriptions.delete(addr);
-    console.log(`👋 Stopped watching: ${addr}`);
-  }
-}
-
-// Refresh watchers every 60 seconds
-function refreshWatchers() {
-  const want = new Set([...ACTIVE_ALPHAS, ...CANDIDATE_ALPHAS]);
-  const current = new Set(subscriptions.keys());
-
-  // Add new watchers
-  for (const addr of want) {
-    if (!current.has(addr)) {
-      const label = ACTIVE_ALPHAS.includes(addr) ? 'active' : 'candidate';
-      watchAddress(addr, label);
+  while (true) {
+    try {
+      const sigs = await connection.getSignaturesForAddress(alphaPk, { limit: 1 });
+      if (sigs.length > 0 && sigs[0].signature !== lastSig) {
+        lastSig = sigs[0].signature;
+        await handleAlphaTx(sigs[0].signature);
+      }
+    } catch (err: any) {
+      console.error('Watch error:', err.message || err);
     }
-  }
-
-  // Remove old watchers
-  for (const addr of current) {
-    if (!want.has(addr)) {
-      unwatchAddress(addr);
-    }
+    await new Promise((r) => setTimeout(r, 3000));
   }
 }
 
-setInterval(refreshWatchers, 60_000);
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// Transaction Handler with Alpha Scoring
+// Transaction Handler with Rug Checks
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function handleAlphaTransaction(sig: string, signer: string, label: 'active' | 'candidate') {
+async function handleAlphaTx(sig: string) {
   const tx = await connection.getParsedTransaction(sig, {
     maxSupportedTransactionVersion: 0,
   });
@@ -520,27 +308,8 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
     if (seenMints.has(m)) continue;
     seenMints.add(m);
 
-    if (label === 'candidate') {
-      // Score a "signal": candidate touched a new mint
-      bumpScore(signer);
-      const promoted = maybePromote(signer, PROMOTION_THRESHOLD, PROMOTION_WINDOW_MS);
-      
-      await alert(
-        `🧪 <b>Candidate signal</b>\n` +
-          `Wallet: <code>${signer.slice(0, 8)}...</code>\n` +
-          `Mint: <code>${m.slice(0, 8)}...</code>\n` +
-          `TX: <code>${sig.slice(0, 8)}...</code>${promoted ? '\n\n✅ <b>AUTO-PROMOTED to active!</b>' : ''}`
-      );
-      
-      if (promoted) {
-        refreshAlphas();
-      }
-      return; // Candidates are not traded
-    }
-
-    // label === 'active' → proceed with trade flow
     const mintPk = new PublicKey(m);
-    await alert(`👀 Alpha touched new mint <code>${m.slice(0, 12)}...</code>\nTX: <code>${sig.slice(0, 12)}...</code>`);
+    await alert(`👀 Alpha touched new mint <code>${m}</code>\nTX: <code>${sig}</code>`);
 
     try {
       // Run rug checks
@@ -551,7 +320,7 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
       });
 
       if (!report.ok) {
-        await alert(`⛔️ Skipping <code>${m.slice(0, 12)}...</code> due to: ${report.reasons.join(', ')}`);
+        await alert(`⛔️ Skipping <code>${m}</code> due to: ${report.reasons.join(', ')}`);
         continue;
       }
 
@@ -570,7 +339,7 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
 
       await alert(
         [
-          `✅ Bought ${BUY_SOL.toFixed(3)} SOL of <code>${m.slice(0, 12)}...</code> (checks passed)`,
+          `✅ Bought ${BUY_SOL.toFixed(3)} SOL of <code>${m}</code> (checks passed)`,
           `TX: https://solscan.io/tx/${buy.txid}`,
           start ? `Ref price ~ ${start.toFixed(10)} SOL/token` : '',
         ]
@@ -581,7 +350,7 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
       // Start sentry + exit manager
       Promise.all([manageExit(m), postBuySentry(m)]).catch(() => {});
     } catch (e: any) {
-      await alert(`❌ Buy failed for ${m.slice(0, 12)}...: ${e.message || e}`);
+      await alert(`❌ Buy failed for ${m}: ${e.message || e}`);
     }
   }
 }
@@ -605,9 +374,10 @@ async function manageExit(mintStr: string) {
     if (price > pos.highPrice) pos.highPrice = price;
 
     if (phase === 'early' && price >= earlyTarget) {
+      // Early TP triggered - sell portion or all
       phase = 'trailing';
       await alert(
-        `🎯 Early TP hit for ${mintStr.slice(0, 12)}...: ${price.toFixed(10)} SOL (target ${earlyTarget.toFixed(
+        `🎯 Early TP hit for ${mintStr}: ${price.toFixed(10)} SOL (target ${earlyTarget.toFixed(
           10
         )})\nSwitching to trailing stop...`
       );
@@ -616,23 +386,25 @@ async function manageExit(mintStr: string) {
     if (phase === 'trailing') {
       const trailTrigger = pos.highPrice * (1 - TRAIL_STOP_PCT);
       if (price <= trailTrigger) {
+        // Trailing stop triggered
         try {
           const tx = await swapTokenForSOL(pos.mint, pos.qty);
           const pnl = ((price - pos.entryPrice) / pos.entryPrice) * 100;
           await alert(
-            `🛑 Trailing stop exit: ${mintStr.slice(0, 12)}...\nPrice: ${price.toFixed(
+            `🛑 Trailing stop exit: ${mintStr}\nPrice: ${price.toFixed(
               10
             )} SOL\nPnL: ${pnl.toFixed(1)}%\nTX: https://solscan.io/tx/${tx.txid}`
           );
-
+          
+          // Report paper PnL if in paper mode
           if (IS_PAPER && tx.solOutLamports) {
             await reportPaperPnL(mintStr, pos.costSol, tx.solOutLamports);
           }
-
+          
           delete openPositions[mintStr];
           return;
         } catch (err: any) {
-          await alert(`❌ Exit failed for ${mintStr.slice(0, 12)}...: ${err.message || err}`);
+          await alert(`❌ Exit failed for ${mintStr}: ${err.message || err}`);
         }
       }
     }
@@ -649,17 +421,18 @@ async function postBuySentry(mintStr: string) {
   const entry = pos.entryPrice || 0;
   const start = Date.now();
 
-  await alert(`🛡️ Sentry monitoring ${mintStr.slice(0, 12)}... for ${SENTRY_WINDOW_SEC}s...`);
+  await alert(`🛡️ Sentry monitoring ${mintStr} for ${SENTRY_WINDOW_SEC}s...`);
 
   while ((Date.now() - start) / 1000 < SENTRY_WINDOW_SEC) {
     await new Promise((r) => setTimeout(r, 4000));
-    if (!openPositions[mintStr]) return;
+    if (!openPositions[mintStr]) return; // Already exited
 
     const price = await getQuotePrice(pos.mint);
     if (!price || entry === 0) continue;
 
     const dd = (entry - price) / entry;
     if (dd >= SENTRY_MAX_DD) {
+      // Emergency exit
       try {
         const tx = await swapTokenForSOL(pos.mint, pos.qty);
         await alert(
@@ -667,21 +440,22 @@ async function postBuySentry(mintStr: string) {
             1
           )}% reached.\nTX: https://solscan.io/tx/${tx.txid}`
         );
-
+        
+        // Report paper PnL if in paper mode
         if (IS_PAPER && tx.solOutLamports) {
           await reportPaperPnL(mintStr, pos.costSol, tx.solOutLamports);
         }
-
+        
         delete openPositions[mintStr];
         return;
       } catch (err: any) {
-        await alert(`❌ Sentry exit failed for ${mintStr.slice(0, 12)}...: ${err.message || err}`);
+        await alert(`❌ Sentry exit failed for ${mintStr}: ${err.message || err}`);
       }
     }
   }
 
   if (openPositions[mintStr]) {
-    await alert(`🛡️ Sentry window ended for ${mintStr.slice(0, 12)}... - no issues detected`);
+    await alert(`🛡️ Sentry window ended for ${mintStr} - no issues detected`);
   }
 }
 
@@ -720,12 +494,13 @@ async function main() {
   const mode = IS_PAPER ? '📄 PAPER MODE' : '💰 LIVE MODE';
   console.log(`🚀 Alpha Snipes Bot Starting... ${mode}`);
   console.log(`📍 Wallet: ${walletKeypair.publicKey.toBase58()}`);
+  console.log(`👀 Watching: ${ALPHA_WALLET}`);
   console.log(`💰 Buy size: ${BUY_SOL} SOL`);
   console.log(`🎯 Early TP: ${EARLY_TP_PCT * 100}%`);
   console.log(`🛑 Trailing stop: ${TRAIL_STOP_PCT * 100}%`);
   console.log(`🛡️ Sentry window: ${SENTRY_WINDOW_SEC}s (max DD: ${SENTRY_MAX_DD * 100}%)`);
   console.log(`⚙️  Priority: ${CU_UNIT_PRICE} microLamports, ${CU_LIMIT} CU limit`);
-
+  
   if (IS_PAPER) {
     console.log('');
     console.log('⚠️  PAPER MODE ACTIVE - No real transactions will be sent!');
@@ -734,28 +509,21 @@ async function main() {
     console.log('');
   }
 
-  console.log(`\n🔍 Alpha Verifier Active:`);
-  console.log(`   Active alphas: ${ACTIVE_ALPHAS.length}`);
-  console.log(`   Candidates: ${CANDIDATE_ALPHAS.length}`);
-  console.log(`   Use /alpha_list to see details\n`);
-
   await alert(
     [
       `🚀 <b>Alpha Snipes Bot Started</b> ${IS_PAPER ? '(PAPER MODE)' : '(LIVE)'}`,
       `Wallet: <code>${walletKeypair.publicKey.toBase58()}</code>`,
+      `Watching: <code>${ALPHA_WALLET}</code>`,
       `Buy: ${BUY_SOL} SOL | TP: ${EARLY_TP_PCT * 100}% | Trail: ${TRAIL_STOP_PCT * 100}%`,
       `Sentry: ${SENTRY_WINDOW_SEC}s (DD: ${SENTRY_MAX_DD * 100}%)`,
-      `\n🔍 Watching: ${ACTIVE_ALPHAS.length} active, ${CANDIDATE_ALPHAS.length} candidates`,
     ].join('\n')
   );
 
-  // Start watching all alphas
-  refreshWatchers();
+  watchAlphaWallet();
 }
 
 main().catch((err) => {
   console.error('Fatal error:', err);
   process.exit(1);
 });
-
 

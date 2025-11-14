@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "SSH FS - alpha-snipes-vm",
+			"uri": "ssh://alpha-snipes-vm/home/ubuntu/Alpha Snipes"
+		}
+	],
+	"settings": {}
+}

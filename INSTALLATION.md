@@ -129,7 +129,11 @@ npm run dev
 
 ## 📊 What to Expect
 
-When the bot starts, you'll see:
+**Bot Commands in Telegram:**
+/status – Check bot heartbeat and current pulse  
+/pnl – Show realized profit/loss  
+/pnl 24h – Realized PnL (last 24 hours)  
+/open – Show unrealized PnL (open positions)
 
 **Console:**
 ```
@@ -152,6 +156,10 @@ Buy: 0.01 SOL | TP: 30% | Trail: 20%
 Sentry: 120s (DD: 22%)
 ```
 
+You’ll also now see periodic monitoring messages such as:
+💓 Heartbeat — shows system uptime and recent signals  
+🤫 Silent alert — notifies if no signals were received for 60+ minutes  
+
 ## 🎯 Bot Workflow
 
 1. **Detects Alpha Activity:** Monitors target wallet for new transactions
@@ -165,6 +173,13 @@ Sentry: 120s (DD: 22%)
 5. **Starts Monitoring:**
    - 🛡️ **Sentry**: Monitors for rapid drawdown (first 2 min)
    - 🎯 **Exit Manager**: Watches for early TP or trailing stop
+
+6. **Tracks Profit/Loss:**  
+   - 💰 Records trades in persistent ledger (`data/trades.jsonl`)
+   - `/pnl` for realized PnL, `/open` for unrealized PnL
+
+7. **Partial Take-Profit (if enabled):**
+   - Example: `PARTIAL_TP_PCT=0.5` sells 50% at early TP, trails the rest
 
 ## 🔧 Tuning Parameters
 
@@ -208,6 +223,11 @@ TRAIL_STOP_PCT=0.15                 # Tighter trailing stop
    pm2 logs alpha-snipes
    ```
 
+5. **Heartbeat & Watchdog:**  
+   - Heartbeat interval: `HEARTBEAT_EVERY_MIN` (default 15)  
+   - Silent alert threshold: `SILENT_ALERT_MIN` (default 60)
+   - Both configurable in `.env`
+
 ## 🐛 Troubleshooting
 
 ### "Invalid WALLET_PRIVATE_KEY"
@@ -226,6 +246,11 @@ TRAIL_STOP_PCT=0.15                 # Tighter trailing stop
 - Verify `ALPHA_WALLET` is correct
 - Check if alpha wallet is active
 - Ensure RPC connection is stable
+
+### "Too Many Requests" or "Bad Request"
+- Jupiter API rate limit reached
+- The bot automatically backs off (20–60s) and retries safely
+- Consider a premium Jupiter plan or private RPC for higher limits
 
 ## 📞 Support
 

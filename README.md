@@ -1,376 +1,304 @@
-# 🎯 Alpha Snipes Bot
+# 🎯 Alpha Snipes
 
-**Solana copy-trading bot with advanced rug detection and priority execution**
+💎 **Enterprise-grade Solana alpha copy-trading bot with smart exits, partial TPs, and full monitoring.**
 
-Automatically copy trades from successful "alpha wallets" with built-in safety checks, priority fees for faster execution, and intelligent exit management.
-
----
-
-## ✨ Features
-
-### 🔍 Smart Trade Detection + Alpha Verifier
-- Real-time monitoring of alpha wallet transactions
-- **NEW: Alpha Verifier** - Auto-score and promote candidate wallets
-- **NEW: Telegram commands** - Add/remove alphas on the fly
-- Automatic extraction of new token mints
-- Dynamic alpha management (no bot restart needed)
-
-### 🛡️ Comprehensive Rug Checks
-- ✅ Mint authority revoked verification
-- ✅ Freeze authority revoked verification
-- ✅ Transfer tax detection (buy vs sell quote comparison)
-- ✅ Route validation (ensures liquidity exists)
-- ✅ Price impact analysis
-
-### ⚡ Priority Execution (Jito-lite)
-- Configurable compute unit price for transaction priority
-- Adjustable compute unit limits
-- Faster fills during high-demand periods
-
-### 🛡️ Post-Buy Sentry System
-- Monitors positions for first 2 minutes after entry
-- Emergency exit on rapid drawdown (default: -22%)
-- Protects against immediate dumps
-
-### 📈 Intelligent Exit Management
-- **Early Take-Profit**: Sells at configurable profit target (default: 30%)
-- **Trailing Stop**: Protects profits with dynamic stop-loss (default: 20% from high)
-- Automatic position tracking and monitoring
-
-### 📱 Live Telegram Alerts
-- Real-time notifications for all bot actions
-- Transaction links to Solscan
-- PnL reporting on exits
-- Detailed error messages
+Automatically copy trades from successful "alpha wallets" with comprehensive safety checks, intelligent exit strategies, and professional operational monitoring.
 
 ---
 
 ## 🚀 Quick Start
 
-### 📄 Paper Mode (Recommended First!)
+### For Operators
 
-**Test with ZERO RISK before using real money!**
-
-```bash
-# 1. Install
-npm install
-
-# 2. Configure (NO wallet key needed!)
-cp env.template .env
-nano .env  # Set ALPHA_WALLET only
-
-# 3. Run
-npm start
-```
-
-See **[PAPER_MODE.md](PAPER_MODE.md)** for the complete guide.
-
-### 💰 Live Mode (After Paper Testing)
-
-See **[QUICKSTART.md](QUICKSTART.md)** for the fastest path to live trading.
+**Run and operate the bot** → [📖 Operator Guide](docs/OPERATOR_GUIDE.md)
 
 ```bash
-# 1. Fix npm cache (one-time)
-sudo chown -R $(id -u):$(id -g) "$HOME/.npm"
-
-# 2. Install dependencies
+# Install
 npm install
 
-# 3. Configure for LIVE
+# Configure
 cp env.template .env
 nano .env
-# Set TRADE_MODE=live
-# Set WALLET_PRIVATE_KEY
-# Set ALPHA_WALLET
 
-# 4. Run
+# Test in paper mode
 npm start
 ```
 
----
+### For Deployment
 
-## 📚 Documentation
+**Deploy to VPS** → [☁️ Oracle Cloud Guide](docs/ORACLE_DEPLOY.md)
 
-### Getting Started
-- **[PAPER_MODE.md](PAPER_MODE.md)** - ⭐ Test with zero risk (START HERE!)
-- **[QUICKSTART.md](QUICKSTART.md)** - Get running in 5 minutes
-- **[INSTALLATION.md](INSTALLATION.md)** - Detailed setup guide
-- **[SETUP_INSTRUCTIONS.md](SETUP_INSTRUCTIONS.md)** - Telegram bot setup
-
-### Advanced Features
-- **[ALPHA_VERIFIER.md](ALPHA_VERIFIER.md)** - 🔍 Auto-discovery & scoring system
-- **[PM2_SETUP.md](PM2_SETUP.md)** - 🔄 Keep bot running 24/7
-
----
-
-## ⚙️ Configuration
-
-All settings are in `.env`:
-
-### Trading Parameters
-```env
-BUY_SOL=0.01              # Position size
-EARLY_TP_PCT=0.3          # Take profit at +30%
-TRAIL_STOP_PCT=0.2        # Trail stop at -20% from high
-```
-
-### Safety Settings
-```env
-REQUIRE_AUTHORITY_REVOKED=true  # Skip tokens with authorities
-MAX_TAX_BPS=500                 # Max 5% transfer tax
-MAX_PRICE_IMPACT_BPS=3000       # Max 30% price impact
-SENTRY_WINDOW_SEC=120           # Monitor for 2 minutes
-SENTRY_MAX_DRAWDOWN_PCT=0.22    # Exit at -22% early
-```
-
-### Priority Fees
-```env
-CU_UNIT_PRICE_MICROLAMPORTS=5000  # Priority fee (2k-10k range)
-CU_LIMIT=800000                   # Compute unit limit
-```
-
----
-
-## 🎯 How It Works
-
-### 1. Detection Phase
-```
-Alpha wallet makes trade → Bot detects in 3s → Extracts new tokens
-```
-
-### 2. Safety Phase
-```
-Check mint authority → Check freeze authority → 
-Test buy route → Test sell route → Calculate tax
-```
-
-### 3. Execution Phase
-```
-Rug checks pass → Execute buy with priority fee → 
-Send Telegram alert → Start monitoring
-```
-
-### 4. Monitoring Phase
-```
-Sentry: Watch for -22% drawdown (first 2 min)
-Exit Manager: Track for 30% TP or 20% trailing stop
-```
-
-### 5. Exit Phase
-```
-Target hit → Execute sell → Report PnL → Close position
-```
-
----
-
-## 📊 Example Telegram Flow
-
-```
-👀 Alpha touched new mint ABC123...
-   TX: def456...
-
-✅ Bought 0.01 SOL of ABC123... (checks passed)
-   TX: https://solscan.io/tx/ghi789...
-   Ref price ~ 0.0000012345 SOL/token
-
-🛡️ Sentry monitoring ABC123... for 120s...
-
-🎯 Early TP hit for ABC123...: 0.0000016049 SOL
-   Switching to trailing stop...
-
-🛑 Trailing stop exit: ABC123...
-   Price: 0.0000014800 SOL
-   PnL: +19.8%
-   TX: https://solscan.io/tx/jkl012...
-```
-
----
-
-## 🔧 Tuning Guide
-
-### For Faster Fills (High Competition)
-```env
-CU_UNIT_PRICE_MICROLAMPORTS=10000
-CU_LIMIT=1000000
-```
-
-### For Safer Entries
-```env
-MAX_TAX_BPS=300
-MAX_PRICE_IMPACT_BPS=2000
-SENTRY_MAX_DRAWDOWN_PCT=0.15
-```
-
-### For Larger Positions
-```env
-BUY_SOL=0.05
-MAX_PRICE_IMPACT_BPS=5000
-```
-
-### For Aggressive Exits
-```env
-EARLY_TP_PCT=0.5          # 50% profit target
-TRAIL_STOP_PCT=0.15       # Tighter stop
-```
-
----
-
-## 🏗️ Architecture
-
-```
-index.ts              Main bot orchestration
-├── lib/
-│   ├── rug_checks.ts   Safety validation via Jupiter API
-│   └── priority.ts     Priority fee helpers
-├── .env              Configuration
-└── test_telegram.ts  Telegram connectivity test
-```
-
-### Tech Stack
-- **Runtime**: Node.js with TypeScript (tsx)
-- **Blockchain**: @solana/web3.js, @solana/spl-token
-- **Swaps**: Jupiter V6 Quote & Swap API
-- **Alerts**: Telegram Bot API
-- **Encoding**: bs58
-
----
-
-## 🎓 Understanding the Checks
-
-### Mint Authority Check
-Verifies the token creator cannot mint unlimited supply (dilute holders).
-
-### Freeze Authority Check
-Ensures the creator cannot freeze token accounts (honeypot prevention).
-
-### Tax Check
-Compares buy → sell quotes to detect hidden transfer taxes.
-
-### Route Validation
-Confirms liquidity exists for both buying and selling.
-
-### Price Impact
-Ensures your trade size won't cause excessive slippage.
-
----
-
-## 💡 Best Practices
-
-### 1. Start Small
-Begin with `BUY_SOL=0.001` to test the system.
-
-### 2. Use Premium RPC
-Free Solana RPC is rate-limited. Consider:
-- [Helius](https://helius.dev) - 100 req/s free tier
-- [QuickNode](https://quicknode.com) - Premium endpoints
-- [Triton](https://triton.one) - High-performance
-
-### 3. Monitor First Trades
-Watch closely for the first 5-10 trades to ensure correct behavior.
-
-### 4. Adjust Priority Fees
-Increase `CU_UNIT_PRICE_MICROLAMPORTS` during high-volume periods.
-
-### 5. Run in Background
-Use PM2 or screen/tmux for persistent operation:
 ```bash
-npm install -g pm2
-pm2 start "npm start" --name alpha-snipes
+# One-time setup
+pm2 start ecosystem.config.cjs
+pm2 save
+pm2 startup
 ```
 
-### 6. Secure Your Keys
-- Never commit `.env` to version control (already in `.gitignore`)
-- Use a dedicated wallet for the bot
-- Keep only necessary funds in the wallet
+---
+
+## ✨ Key Features
+
+### Trading & Risk Management
+- 🔍 **Alpha Tracking**: Monitor multiple successful wallets with auto-scoring
+- 🛡️ **Rug Checks**: Validate authorities, taxes, liquidity before every trade
+- 📈 **Smart Exits**: Early TP, partial profit-taking, trailing stops
+- 🚨 **Sentry System**: Emergency exit on rapid drawdown (first 2 minutes)
+
+### Analytics & Monitoring
+- 💰 **PnL Tracking**: Realized and unrealized profit reports
+- 📊 **Trade Ledger**: Persistent JSONL storage for all trades
+- 💓 **Heartbeat**: Periodic health updates every 15 minutes
+- 🔔 **Silent Watchdog**: Alert when no signals for 60+ minutes
+- 📅 **Daily Recap**: Midnight summary of previous day's performance
+
+### User Experience
+- 💬 **Telegram Bot**: Full command interface with inline buttons
+- 🔗 **One-Tap Links**: Solscan mint/alpha/TX buttons
+- 💵 **USD Equivalents**: Dollar values for all trades and PnL
+- 📝 **Human Explanations**: Plain English skip reasons
+
+### API Resilience
+- 🔄 **Multi-Endpoint Fallback**: Automatic Jupiter API failover
+- ⏸️ **Failure Cooldowns**: Smart backoff for 429/400 errors
+- 🌐 **DNS Override**: Force reliable resolvers for stability
+- 🛡️ **Rate Limiting**: Conservative limits prevent API abuse
 
 ---
 
-## ⚠️ Risks & Disclaimers
+## 📚 Complete Documentation
 
-**This bot is for educational purposes. Trading carries significant risk.**
+| Guide | For | Topics |
+|-------|-----|--------|
+| [**Operator Guide**](docs/OPERATOR_GUIDE.md) | Traders | Setup, commands, monitoring, going live |
+| [**Developer Guide**](docs/DEVELOPER_GUIDE.md) | Engineers | Architecture, data flows, extending |
+| [**Config Reference**](docs/CONFIG_REFERENCE.md) | Everyone | All environment variables explained |
+| [**Troubleshooting**](docs/TROUBLESHOOTING.md) | Support | Common issues and solutions |
+| [**Oracle Deploy**](docs/ORACLE_DEPLOY.md) | DevOps | VPS deployment step-by-step |
+| [**Changelog**](docs/CHANGELOG.md) | Everyone | Version history and updates |
+| [**Security Notes**](docs/SECURITY_NOTES.md) | Operators | Wallet safety and risk disclosure |
 
-- **Loss of Funds**: You can lose your entire investment
-- **Smart Contract Risk**: Tokens may have hidden vulnerabilities
-- **Rug Pulls**: Safety checks reduce but don't eliminate risk
-- **Impermanent Loss**: Volatile tokens can lose value quickly
-- **Gas Costs**: Priority fees add to transaction costs
-- **RPC Reliability**: Downtime can cause missed trades
-
-**Use at your own risk. Start with small amounts you can afford to lose.**
-
----
-
-## 🐛 Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| NPM install fails | Run `sudo chown -R $(id -u):$(id -g) "$HOME/.npm"` |
-| Invalid private key | Use base58 format from Phantom export |
-| No trades detected | Verify alpha wallet is active |
-| RPC errors | Switch to premium RPC provider |
-| High gas costs | Reduce `CU_UNIT_PRICE_MICROLAMPORTS` |
-| Too many rug checks fail | Increase `MAX_TAX_BPS` or `MAX_PRICE_IMPACT_BPS` |
-
-See **[INSTALLATION.md](INSTALLATION.md)** for detailed troubleshooting.
+**Start here:** [docs/README.md](docs/README.md)
 
 ---
 
-## 🚧 Roadmap / Future Enhancements
+## 🧭 Telegram Commands
 
-### Pool-Specific Checks
-- Raydium LP burn/lock verification
-- Orca Whirlpool liquidity analysis
-- Meteora pool validation
+### Position & Performance
+```
+/pnl              All-time realized PnL
+/pnl 24h          Last 24 hours
+/pnl today        Today only (since midnight)
+/open             Unrealized PnL on open positions
+/force_exit <mint> Manually close position (paper only)
+```
 
-### Advanced Execution
-- True Jito relayer integration (private mempool)
-- Multi-DEX routing
-- Sandwich attack protection
+### Alpha Management
+```
+/add <wallet>      Add candidate (auto-scored)
+/addactive <wallet> Add directly to active list
+/list              Show all alphas
+/promote <wallet>  Promote candidate to active
+/remove <wallet>   Remove from tracking
+```
 
-### Position Management
-- Partial profit-taking (scale out)
-- Average down on dips
-- Multi-token portfolio tracking
-
-### Analytics
-- SQLite/Firestore trade logging
-- PnL dashboard
-- Win rate statistics
-
-### Multi-Alpha
-- Watch multiple wallets with confidence scoring
-- Consensus-based entry (2+ alphas touch token)
-- Staggered entry sizes
-
----
-
-## 📞 Support
-
-If you encounter issues:
-
-1. Check console output for error details
-2. Verify `.env` configuration
-3. Test Telegram: `npm run test:telegram`
-4. Ensure wallet has sufficient SOL balance
-5. Try a premium RPC endpoint
+### Bot Health
+```
+/status            Show bot health and recent activity
+/health            Alias for /status
+/debug             Toggle debug mode
+/help              Command menu
+```
 
 ---
 
-## 📄 License
+## ⚡ Quick Example
 
-MIT License - See LICENSE file for details
+### Paper Mode Flow
+
+**1. Detection**
+```
+[PAPER] 👀 Alpha touched new mint EPjFWd…Dt1v
+
+[🪙 Mint] [👤 Alpha] [🔗 TX]
+```
+
+**2. Buy (after checks pass)**
+```
+[PAPER] ✅ Bought 0.01 SOL ($2.38) of EPjFWd…Dt1v
+Entry: 0.0000012345 SOL/token (~$0.0003)
+
+[🪙 Mint] [👤 Alpha] [🔗 TX]
+```
+
+**3. Early TP with Partial Profit**
+```
+[PAPER] 💡 Partial TP: Sold $1.19 | +$0.19 (+17.0%)
+
+[PAPER] 🎯 Early TP hit for EPjFWd…Dt1v
+Switching to trailing stop...
+```
+
+**4. Trailing Stop Exit**
+```
+[PAPER] 🛑 Trailing stop exit: EPjFWd…Dt1v
+Exit: 0.00000144 SOL (~$0.0003)
+
+[🪙 Mint] [👤 Alpha] [🔗 TX]
+
+💡 Bought $2.38 → Sold $2.78 | +$0.40 (+17.0%)
+```
 
 ---
 
-## 🙏 Acknowledgments
+## ⚙️ Core Configuration
 
-- [Solana](https://solana.com) - Blockchain platform
-- [Jupiter](https://jup.ag) - DEX aggregator
-- [Telegram](https://telegram.org) - Notifications
+**Minimal `.env` for paper mode:**
+```env
+TELEGRAM_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+TRADE_MODE=paper
+BUY_SOL=0.01
+```
+
+**For live mode, add:**
+```env
+TRADE_MODE=live
+WALLET_PRIVATE_KEY=your_base58_key
+```
+
+**See [CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) for all options.**
 
 ---
 
-**Built with 💎 for the Solana sniper community**
+## 🛠️ Technical Stack
+
+- **TypeScript + Node.js 20**: Modern ES2022 modules
+- **Solana Web3.js**: Blockchain interaction
+- **Jupiter Aggregator**: Token swaps and quotes
+- **Telegram Bot API**: Alerts and commands
+- **PM2**: Process management for 24/7 operation
+
+---
+
+## 📖 Getting Started
+
+### 1. Read the Operator Guide
+Start with [docs/OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md) for complete setup instructions.
+
+### 2. Test in Paper Mode
+Run for 48+ hours in paper mode to understand the bot behavior.
+
+### 3. Monitor Performance
+Use `/pnl 24h` and `/open` to track results.
+
+### 4. Deploy to VPS
+Follow [docs/ORACLE_DEPLOY.md](docs/ORACLE_DEPLOY.md) for 24/7 operation.
+
+### 5. Go Live (Optional)
+Only after paper mode success and understanding all features.
+
+---
+
+## 🔐 Security
+
+- ✅ Use **dedicated wallet** with minimal funds (1-2 SOL)
+- ✅ **Test in paper mode** first (48+ hours)
+- ✅ Store private key in `.env` only (chmod 600)
+- ✅ Set `ADMIN_USER_ID` to YOUR Telegram ID
+- ✅ Enable rug checks (`REQUIRE_AUTHORITY_REVOKED=true`)
+- ✅ Use exit management (never disable TP/trailing stop)
+
+**See [SECURITY_NOTES.md](docs/SECURITY_NOTES.md) for detailed guidance.**
+
+---
+
+## 📊 Example Results
+
+**Paper mode performance (example, not guaranteed):**
+```
+📊 PnL Summary — Last 24h
+
+Buys: 15 | Sells: 12
+Win rate: 58%
+
+Realized PnL:
+$145.23 (0.0612 SOL)
+
+Biggest: +$28.50 (EPjFWd…Dt1v)
+```
+
+**⚠️ Past performance does not guarantee future results.**
+
+---
+
+## 🆘 Need Help?
+
+| Issue | See |
+|-------|-----|
+| **Setup problems** | [OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md) |
+| **Bot not working** | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
+| **Config questions** | [CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) |
+| **Technical deep-dive** | [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) |
+
+---
+
+## 🎁 What's New
+
+**Recent updates:**
+- ✅ Partial Take-Profit (configurable splits)
+- ✅ Trade Ledger (persistent JSONL)
+- ✅ Heartbeat & Watchdog (health monitoring)
+- ✅ Inline Telegram Buttons (one-tap links)
+- ✅ USD Equivalents (dollar values)
+- ✅ Failure Cooldowns (429/400 backoff)
+- ✅ Comprehensive documentation in `/docs`
+
+**See [CHANGELOG.md](docs/CHANGELOG.md) for full history.**
+
+---
+
+## ⚖️ Disclaimer
+
+**Alpha Snipes is provided "as is" without warranty.**
+
+- ❌ No guarantee of profit
+- ❌ No liability for losses  
+- ❌ Not financial advice
+
+**Trading crypto carries significant risk. Only trade with funds you can afford to lose.**
+
+---
+
+## 📝 License
+
+MIT License - See LICENSE file for details.
+
+---
+
+**Built with 💎 for the Solana trading community**
 
 ⚡ **Fast. Safe. Automated.** ⚡
 
+---
+
+## 🔗 Quick Links for Operators
+
+```bash
+# Test in paper mode
+./docs/OPERATOR_GUIDE.md → Section: Paper Mode Setup
+
+# Deploy to VPS
+./docs/ORACLE_DEPLOY.md
+
+# Understand all settings
+./docs/CONFIG_REFERENCE.md
+
+# Bot not working?
+./docs/TROUBLESHOOTING.md
+
+# Learn architecture
+./docs/DEVELOPER_GUIDE.md
+```
+
+**Start here:** [docs/README.md](docs/README.md) 📚

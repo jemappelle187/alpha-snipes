@@ -1,5 +1,11 @@
 # 📄 Paper Trading Mode Guide
 
+> **📚 This content has moved to organized documentation.**  
+> See [docs/OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md) for the complete operator guide, including paper mode walkthrough, commands, and best practices.  
+> Also see: [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md), [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+
+---
+
 ## What is Paper Mode?
 
 Paper trading lets you **test the bot with zero risk** by simulating all trades using real-time market data. No actual transactions are sent to the blockchain, and **no wallet private key is required**.
@@ -15,6 +21,10 @@ Paper trading lets you **test the bot with zero risk** by simulating all trades 
 ✅ **PnL reporting** - Shows hypothetical profit/loss  
 ✅ **Telegram alerts** - All tagged with [PAPER]  
 ✅ **Zero on-chain cost** - No gas fees, no real SOL spent  
+✅ **`/pnl` and `/open` commands** - Realized/unrealized PnL tracking  
+✅ **Inline Telegram buttons** - One-tap Solscan links (`[🪙 Mint] [👤 Alpha] [🔗 TX]`)  
+✅ **Heartbeat and silent watchdog** - Automated bot health monitoring  
+✅ **Partial Take-Profit** - Configurable fractional profit-taking via `PARTIAL_TP_PCT`  
 
 ### What Paper Mode Does NOT Include
 
@@ -145,6 +155,41 @@ Or if checks pass:
    Exit: 0.0240 SOL
    Profit: +0.0040 SOL (+20.0%)
 ```
+
+### 6. Partial Take-Profit Example
+
+**Enable Partial TP (optional):**
+```bash
+# In .env, set:
+PARTIAL_TP_PCT=0.5    # Sell 50% at Early TP, trail with 50%
+```
+
+**Flow with Partial TP:**
+```
+[PAPER] 🎯 Early TP hit for EPjFWd…Dt1v
+Price: 0.00000156 SOL (~$0.0004)
+
+[PAPER] 💡 Partial TP: Sold $1.19 | +$0.19 (+17.0%)
+
+Partial: 50% sold above
+Target: 0.00000156 SOL
+Switching to trailing stop...
+
+[PAPER] 🛑 Trailing stop exit: EPjFWd…Dt1v (remainder)
+Exit: 0.00000148 SOL (~$0.0004)
+
+[🪙 Mint] [👤 Alpha] [🔗 TX]  ← clickable inline buttons
+
+💡 Bought $1.19 → Sold $1.47 | +$0.28 (+23.5%)
+
+Total realized: +$0.47 across 2 exits
+```
+
+**Benefits:**
+- Lock in partial profits early
+- Reduce risk while keeping upside potential
+- Automatic ledger tracking of both exits
+- Configurable split (0.33 = 33%, 0.5 = 50%, etc.)
 
 ---
 
