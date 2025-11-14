@@ -776,6 +776,19 @@ bot.onText(/^\/open$/, async (msg) => {
       lines.push(`<code>${short(mintStr)}</code>  [fetching...]`);
       continue;
     }
+    
+    // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
+    // Don't display incorrect PnL - show "price unreliable" instead
+    const priceRatio = Math.max(currentPrice / pos.entryPrice, pos.entryPrice / currentPrice);
+    if (priceRatio > 10) {
+      lines.push(
+        `<code>${short(mintStr)}</code>  [price unreliable]\n` +
+        `  Entry: ${formatSol(pos.entryPrice)}  |  Current: [unreliable]\n` +
+        `  ⏳ EARLY TP  |  <code>${esc(String(Math.floor((Date.now() - pos.entryTime) / 60000)))}</code>m\n`
+      );
+      continue;
+    }
+    
     const uPct = ((currentPrice / pos.entryPrice) - 1) * 100;
     const uSol = (currentPrice - pos.entryPrice) * pos.costSol;
     const uUsd = uSol * (solUsd || 0);
@@ -2280,6 +2293,14 @@ async function postBuySentry(mintStr: string) {
 
     const price = await getQuotePrice(pos.mint);
     if (!price || entry === 0) continue;
+    
+    // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
+    // Skip this check and wait for next price update
+    const priceRatio = Math.max(price / entry, entry / price);
+    if (priceRatio > 10) {
+      dbg(`[SENTRY] Skipping sentry check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${entry.toExponential(3)}, current: ${price.toExponential(3)})`);
+      continue;
+    }
 
     const dd = (entry - price) / entry;
     if (dd >= SENTRY_MAX_DD) {
