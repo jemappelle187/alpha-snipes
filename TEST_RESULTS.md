@@ -74,10 +74,13 @@
     - Expected fee: 0.001-0.002 SOL per swap (calculated, not visible in paper mode)
 
 ### Test 3.3: Priority Fee Verification (Startup Log)
-- **Status:** ⏳ **PENDING** - Run command to verify
-- **Action:** Run: `ssh ubuntu@alpha-snipes-vm "grep -E '(Priority|max.*SOL)' ~/.pm2/logs/alpha-snipes-paper-out.log | tail -1"`
+- **Status:** ✅ **PASS**
+- **Action:** Ran: `ssh ubuntu@alpha-snipes-vm "grep -E '(Priority|max.*SOL)' ~/.pm2/logs/alpha-snipes-paper-out.log | tail -1"`
 - **Expected:** Shows max fee calculation: `max 0.00000125 SOL (multiplier: 1x)`
-- **Results:** [Run command to fill in]
+- **Results:** 
+  - ✅ Output: `⚙️  Priority: 5000 microLamports/CU, 800000 CU limit, max 0.00000125 SOL (multiplier: 1x)`
+  - ✅ Matches expected configuration
+  - ✅ Max fee is very reasonable (0.00000125 SOL = ~$0.0002)
 
 ---
 
@@ -118,7 +121,13 @@
 
 ## 🐛 Issues Found
 
-[None yet]
+### Issue 1: False Max Loss Protection Trigger
+- **Status:** ✅ **FIXED**
+- **Description:** Max loss protection triggered incorrectly (-99.9%) when BUY quote fallback returned unreliable price (7.593e-7 vs actual ~7.4e-4)
+- **Root Cause:** BUY quote fallback can return incorrect prices when SELL quote is rate-limited, and this was used for max loss calculation
+- **Fix:** Added sanity check to skip max loss protection if price ratio >10x from entry price (likely bad price from fallback)
+- **Commit:** `9527a2c` - "Fix false max loss protection trigger from unreliable BUY quote fallback prices"
+- **Note:** Bot will now wait for next price check instead of triggering false exit
 
 ---
 
@@ -132,8 +141,8 @@
 ---
 
 **Next Steps:**
-1. Complete PnL testing (Step 2)
-2. Test priority fees in actual swaps (Step 3)
-3. Test BUY quote fallback (Step 4)
-4. Begin Mainnet Readiness Testing
+1. ✅ **Step 3 Complete** - Priority fees verified and working
+2. Test BUY quote fallback (Step 4) - Optional
+3. Begin Mainnet Readiness Testing (Step 5) - Recommended next
+4. Pull latest code to VM to get max loss protection fix
 
