@@ -1480,13 +1480,20 @@ async function getQuotePrice(mint: PublicKey): Promise<number | null> {
           let price = 0.1 / tokensOutUI;
           dbg(`[PRICE] BUY quote fallback: raw=${tokensOutRaw.toExponential(3)}, decimals=${tokenDecimals}, UI=${tokensOutUI.toExponential(3)}, price=${price.toExponential(3)} SOL/token`);
           
-          // Sanity check: if price is unreasonably small (< 1e-10), likely decimals mismatch
-          // Many pump.fun tokens have 0 decimals, so try that
-          if (price < 1e-10 && tokenDecimals === 9) {
-            dbg(`[PRICE] Price too small with 9 decimals, trying 0 decimals assumption`);
+          // Sanity check: if price is unreasonably small or way off from typical range, likely decimals mismatch
+          // Typical token prices: 1e-6 to 1e-2 SOL/token
+          // If price < 1e-6, likely wrong decimals (many pump.fun tokens have 0 decimals)
+          if (price < 1e-6 && tokenDecimals === 9) {
+            dbg(`[PRICE] Price too small (${price.toExponential(3)}) with 9 decimals, trying 0 decimals assumption`);
             const tokensOutUI0 = tokensOutRaw; // Assume 0 decimals
-            price = 0.1 / tokensOutUI0;
-            dbg(`[PRICE] BUY quote with 0 decimals: ${price.toExponential(3)} SOL/token`);
+            const price0 = 0.1 / tokensOutUI0;
+            // Only use 0 decimals if it gives a more reasonable price (between 1e-6 and 1e-2)
+            if (price0 >= 1e-6 && price0 <= 1e-2) {
+              price = price0;
+              dbg(`[PRICE] BUY quote with 0 decimals: ${price.toExponential(3)} SOL/token (more reasonable)`);
+            } else {
+              dbg(`[PRICE] 0 decimals also gives unreasonable price (${price0.toExponential(3)}), keeping 9 decimals result`);
+            }
           }
           
           dbg(`[PRICE] BUY quote fallback success for ${shortMint}: ${price.toExponential(3)} SOL/token`);
