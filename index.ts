@@ -1736,14 +1736,17 @@ async function executeCopyTradeFromSignal(opts: {
 
   try {
     if (notifyTouch) {
+      // Get token name for display (quick fetch, don't wait if slow)
+      const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+      const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+      const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+      
       await tgQueue.enqueue(
         () =>
           bot.sendMessage(
       TELEGRAM_CHAT_ID,
-            `${tag}👀 ${source === 'watchlist' ? 'Watchlist retry' : 'Alpha touched new mint'} <code>${short(
-              mintStr
-            )}</code>\nAlpha: <code>${short(alpha)}</code>`,
-            linkRow({ mint: mintStr, alpha, tx: txSig })
+            `${tag}👀 ${source === 'watchlist' ? 'Watchlist retry' : 'Alpha touched new mint'} <b>${tokenDisplay}</b>\nAlpha: <code>${short(alpha)}</code>`,
+            linkRow({ mint: mintStr, alpha, tx: txSig, chartUrl })
           ),
         { chatId: TELEGRAM_CHAT_ID }
       );
@@ -2267,8 +2270,12 @@ async function manageExit(mintStr: string) {
         pos.costSol = pos.costSol * (1 - PARTIAL_TP_PCT);
       }
       
+      // Get token name for display
+      const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+      const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+      
       await alert(
-        `${tag}🎯 Early TP hit for <code>${short(mintStr)}</code>\n` +
+        `${tag}🎯 Early TP hit for <b>${tokenDisplay}</b>\n` +
         `Price: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
         `Target: ${formatSol(earlyTarget)}\n` +
         `${PARTIAL_TP_PCT > 0 ? `Partial: ${(PARTIAL_TP_PCT * 100).toFixed(0)}% sold above` : '(no partial TP configured)'}\n` +
