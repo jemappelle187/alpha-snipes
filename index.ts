@@ -298,7 +298,8 @@ async function safeGetParsedTx(connection: any, sig: string): Promise<any | null
 }
 
 // State
-const seenMints = new Set<string>();
+const seenMints = new Set<string>(); // Track processed mint addresses
+const seenSignatures = new Set<string>(); // Track processed transaction signatures
 const recentPaperBuys = new Map<string, number>(); // key -> timestamp for idempotency
 let openPositions: Record<
   string,
@@ -1619,6 +1620,45 @@ function refreshWatchers() {
 
 setInterval(refreshWatchers, 60_000);
 
+// Polling backup: Check for missed transactions every 30 seconds
+// This catches transactions that onLogs() might miss due to RPC issues
+let lastPollTime = new Map<string, number>();
+setInterval(async () => {
+  for (const alpha of ACTIVE_ALPHAS) {
+    try {
+      const pk = new PublicKey(alpha);
+      const lastSeen = lastPollTime.get(alpha) || Date.now() - 60_000; // Default to 1 min ago
+      const sigs = await connection.getSignaturesForAddress(pk, {
+        limit: 10, // Only check last 10 transactions
+        until: undefined,
+      });
+
+      for (const sigInfo of sigs) {
+        if (!sigInfo.blockTime) continue;
+        const txTime = sigInfo.blockTime * 1000;
+        if (txTime <= lastSeen) break; // Already processed
+
+        // Skip if we already processed this signature
+        if (seenSignatures.has(sigInfo.signature)) continue;
+
+        try {
+          seenSignatures.add(sigInfo.signature); // Mark as seen before processing
+          await handleAlphaTransaction(sigInfo.signature, alpha, 'active');
+        } catch (err: any) {
+          dbg(`[POLL] Failed to process ${sigInfo.signature.slice(0, 8)}: ${err.message || err}`);
+        }
+      }
+
+      // Update last poll time
+      if (sigs.length > 0 && sigs[0].blockTime) {
+        lastPollTime.set(alpha, sigs[0].blockTime * 1000);
+      }
+    } catch (err: any) {
+      dbg(`[POLL] Failed to poll ${short(alpha)}: ${err.message || err}`);
+    }
+  }
+}, 30_000); // Poll every 30 seconds
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Transaction Handler with Alpha Scoring
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2586,10 +2626,11 @@ async function scanRecentAlphaTransactions() {
         const txTime = sigInfo.blockTime * 1000;
         if (txTime < since) break; // Too old
 
-        // Check if we already processed this
-        if (seenMints.has(sigInfo.signature.slice(0, 8))) continue;
+        // Check if we already processed this signature
+        if (seenSignatures.has(sigInfo.signature)) continue;
 
         try {
+          seenSignatures.add(sigInfo.signature); // Mark as seen before processing
           await handleAlphaTransaction(sigInfo.signature, alpha, 'active');
         } catch (err: any) {
           dbg(`[SCAN] Failed to process ${sigInfo.signature.slice(0, 8)}: ${err.message || err}`);
