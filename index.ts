@@ -397,10 +397,11 @@ const subscriptions = new Map<string, number>();
 
 function isAdmin(msg: TelegramBot.Message): boolean {
   if (!ADMIN_USER_ID) return true; // If not set, allow all (backward compat)
-  return (
-    String(msg.chat.id) === String(COMMAND_CHAT_ID) &&
-    String(msg.from?.id) === String(ADMIN_USER_ID)
-  );
+  const chatId = String(msg.chat.id);
+  const userId = String(msg.from?.id);
+  // Allow commands from: COMMAND_CHAT_ID (private) OR TELEGRAM_CHAT_ID (channel/group)
+  const allowedChat = chatId === String(COMMAND_CHAT_ID) || chatId === String(TELEGRAM_CHAT_ID);
+  return allowedChat && userId === String(ADMIN_USER_ID);
 }
 
 async function alert(text: string) {
