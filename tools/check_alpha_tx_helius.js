@@ -37,18 +37,16 @@ async function main() {
     let foundInAlphaTxs = false;
     const BATCH_SIZE = 5; // Smaller batches for Helius
     
-    for (let i = 0; i < Math.min(20, alphaSigs.length); i += BATCH_SIZE) {
-      const batch = alphaSigs.slice(i, i + BATCH_SIZE);
-      const signatures = batch.map(s => s.signature);
+    // Fetch transactions one by one (Helius free tier doesn't support batch)
+    for (let i = 0; i < Math.min(30, alphaSigs.length); i++) {
+      const sig = alphaSigs[i];
       
       try {
-        const txs = await connection.getParsedTransactions(signatures, {
+        const tx = await connection.getParsedTransaction(sig.signature, {
           maxSupportedTransactionVersion: 0,
         });
         
-        for (let j = 0; j < txs.length; j++) {
-          const tx = txs[j];
-          if (!tx) continue;
+        if (tx) {
           
           // Check if this transaction involves our token
           const preTokenBalances = tx.meta?.preTokenBalances || [];
@@ -60,7 +58,6 @@ async function main() {
           
           if (hasToken) {
             foundInAlphaTxs = true;
-            const sig = batch[j];
             
             // Analyze transaction
             const accountKeys = tx.transaction?.message?.accountKeys || [];
@@ -110,12 +107,9 @@ async function main() {
             }
             console.log('\n' + '═'.repeat(80));
           }
-        }
         
         // Small delay to avoid rate limits
-        if (i + BATCH_SIZE < alphaSigs.length) {
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
+        await new Promise(resolve => setTimeout(resolve, 200));
         
       } catch (err) {
         if (err.message?.includes('429')) {
@@ -139,22 +133,19 @@ async function main() {
     let foundInTokenTxs = false;
     let checked = 0;
     
-    // Check first 30 transactions (most recent)
-    for (let i = 0; i < Math.min(30, tokenSigs.length); i += BATCH_SIZE) {
-      const batch = tokenSigs.slice(i, i + BATCH_SIZE);
-      const signatures = batch.map(s => s.signature);
+    console.log('   Checking transactions one by one (Helius free tier limitation)...\n');
+    
+    // Check first 50 transactions (most recent) - one by one for Helius free tier
+    for (let i = 0; i < Math.min(50, tokenSigs.length); i++) {
+      const sig = tokenSigs[i];
       
       try {
-        const txs = await connection.getParsedTransactions(signatures, {
+        const tx = await connection.getParsedTransaction(sig.signature, {
           maxSupportedTransactionVersion: 0,
         });
         
-        for (let j = 0; j < txs.length; j++) {
-          const tx = txs[j];
-          if (!tx) continue;
-          
+        if (tx) {
           checked++;
-          const sig = batch[j];
           
           // Check if alpha wallet is in account keys
           const accountKeys = tx.transaction?.message?.accountKeys || [];
@@ -209,11 +200,9 @@ async function main() {
               console.log('\n' + '═'.repeat(80));
             }
           }
-        }
         
-        if (i + BATCH_SIZE < tokenSigs.length) {
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 200));
         
       } catch (err) {
         if (err.message?.includes('429')) {
