@@ -1771,6 +1771,8 @@ async function executeCopyTradeFromSignal(opts: {
 
     const liquidity = await getLiquidityResilient(mintStr);
     const liquidityUsd = liquidity.ok && liquidity.liquidityUsd ? liquidity.liquidityUsd : 0;
+    const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+    const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
     const liqPass = liquidityUsd >= MIN_LIQUIDITY_USD;
     dbg(
       `[GUARD] Liquidity | liquidity=$${liquidityUsd.toFixed(0)} | min=$${MIN_LIQUIDITY_USD} | ${
@@ -1890,7 +1892,8 @@ async function executeCopyTradeFromSignal(opts: {
       const solUsd = await getSolUsd();
     const buyUsd = buySol * (solUsd || 0);
       const refPriceUsd = start * (solUsd || 0);
-    const msgPrefix = source === 'watchlist' ? `${tag}🔁 Watchlist auto-buy` : `${tag}✅ Bought`;
+      const msgPrefix = source === 'watchlist' ? `${tag}🔁 Watchlist auto-buy` : `${tag}✅ Bought`;
+      // tokenDisplay and chartUrl already defined above from liquidity fetch
     const sizingLine = `Size: ${formatSol(buySol)} (${sizing.multiplier >= 1 ? '▲' : '▼'}×${sizing.multiplier.toFixed(
       2
     )})`;
@@ -1898,10 +1901,11 @@ async function executeCopyTradeFromSignal(opts: {
       () =>
         bot.sendMessage(
         TELEGRAM_CHAT_ID,
-          `${msgPrefix} ${formatSol(buySol)}${solUsd ? ` (${formatUsd(buyUsd)})` : ''} of <code>${short(
-            mintStr
-          )}</code>\nEntry: ${start.toFixed(10)} SOL/token${solUsd ? ` (~${formatUsd(refPriceUsd)})` : ''}\n${sizingLine}`,
-          linkRow({ mint: mintStr, alpha, tx: buy.txid })
+          `${msgPrefix} <b>${tokenDisplay}</b>\n` +
+          `Size: ${formatSol(buySol)}${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
+          `Entry: ${start.toFixed(10)} SOL/token${solUsd ? ` (~${formatUsd(refPriceUsd)})` : ''}\n` +
+          `${sizingLine}`,
+          linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
         ),
       { chatId: TELEGRAM_CHAT_ID }
     );
@@ -2189,6 +2193,33 @@ async function manageExit(mintStr: string) {
     }
 
     if (price > pos.highPrice) pos.highPrice = price;
+    
+    // Milestone alerts: notify at 10%, 20%, 30%, 100%, 200%, 500% gains
+    const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+    const milestones = [10, 20, 30, 100, 200, 500];
+    const lastMilestone = (pos as any).lastMilestone || 0;
+    const nextMilestone = milestones.find(m => gainPct >= m && m > lastMilestone);
+    
+    if (nextMilestone) {
+      (pos as any).lastMilestone = nextMilestone;
+      const solUsd = await getSolUsd();
+      const priceUsd = price * (solUsd || 0);
+      const entryUsd = pos.costSol * (solUsd || 0);
+      const unrealizedUsd = (price - pos.entryPrice) * pos.costSol * (solUsd || 0);
+      const tag = IS_PAPER ? '[PAPER] ' : '';
+      
+      // Get token name for display
+      const liquidity = await getLiquidityResilient(mintStr).catch(() => null);
+      const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+      
+      await tgQueue.enqueue(() => bot.sendMessage(
+        TELEGRAM_CHAT_ID,
+        `${tag}🎉 Milestone: <b>${tokenDisplay}</b> hit +${nextMilestone}%!\n` +
+        `Current: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
+        `Unrealized: ${(unrealizedUsd >= 0 ? '+' : '')}${formatUsd(unrealizedUsd)} (${(gainPct >= 0 ? '+' : '')}${gainPct.toFixed(1)}%)`,
+        linkRow({ mint: mintStr, alpha: pos.alpha, chartUrl: liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined })
+      ), { chatId: TELEGRAM_CHAT_ID });
+    }
 
     if (phase === 'early' && price >= earlyTarget) {
       phase = 'trailing';

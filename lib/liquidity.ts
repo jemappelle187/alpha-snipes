@@ -12,6 +12,8 @@ type DexPair = {
   volume?: { h24?: number; m5?: number };
   volume24h?: number;
   pairCreatedAt?: number;
+  baseToken?: { name?: string; symbol?: string; address?: string };
+  quoteToken?: { name?: string; symbol?: string; address?: string };
 };
 
 export type LiquiditySnapshot = {
@@ -21,6 +23,8 @@ export type LiquiditySnapshot = {
   volume24h?: number | null;
   pairCreatedAt?: number | null;
   pairAddress?: string;
+  tokenName?: string | null; // Token name from DexScreener
+  tokenSymbol?: string | null; // Token symbol from DexScreener
   error?: string;
 };
 
@@ -116,6 +120,18 @@ export async function getLiquidityResilient(
       const liquidityUsd = Number(best.liquidityUsd ?? best.liquidity?.usd ?? 0) || 0;
       const volume24h = Number(best.volume24h ?? best.volume?.h24 ?? 0) || 0;
       const pairCreatedAt = best.pairCreatedAt ? Number(best.pairCreatedAt) : null;
+      
+      // Extract token name and symbol (baseToken is usually the token we're looking for)
+      let tokenName: string | null = null;
+      let tokenSymbol: string | null = null;
+      if (best.baseToken?.address?.toLowerCase() === mint.toLowerCase()) {
+        tokenName = best.baseToken.name || null;
+        tokenSymbol = best.baseToken.symbol || null;
+      } else if (best.quoteToken?.address?.toLowerCase() === mint.toLowerCase()) {
+        tokenName = best.quoteToken.name || null;
+        tokenSymbol = best.quoteToken.symbol || null;
+      }
+      
       toCache(mint, liquidityUsd);
       const shortMint = mint.slice(0, 8) + '...';
       console.log(`[LIQ] DexScreener: $${liquidityUsd.toFixed(0)} liquidity, $${volume24h.toFixed(0)} 24h volume for ${shortMint}`);
@@ -126,6 +142,8 @@ export async function getLiquidityResilient(
         volume24h,
         pairCreatedAt,
         pairAddress: best.pairAddress,
+        tokenName,
+        tokenSymbol,
       };
     } catch (err: any) {
       lastError = err;
@@ -146,6 +164,10 @@ export async function getLiquidityResilient(
     ok: false,
     source: 'dexscreener',
     liquidityUsd: null,
+    volume24h: null,
+    pairCreatedAt: null,
+    tokenName: null,
+    tokenSymbol: null,
     error: lastError ? String(lastError.message || lastError) : 'unknown',
   };
 }
