@@ -1111,6 +1111,8 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     // Step 2: Check liquidity
     const liquidity = await getLiquidityResilient(mintStr);
     const liquidityUsd = liquidity.ok && liquidity.liquidityUsd ? liquidity.liquidityUsd : 0;
+    const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+    const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
     
     // Step 3: Determine buy amount
     const buySol = customAmount || BUY_SOL;
@@ -1141,12 +1143,12 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     const tag = '[PAPER] ';
     await tgQueue.enqueue(() => bot.sendMessage(
       TELEGRAM_CHAT_ID,
-      `${tag}🔨 Force buy: <code>${short(mintStr)}</code>\n` +
+      `${tag}🔨 Force buy: <b>${tokenDisplay}</b>\n` +
       `Entry: ${formatSol(currentPrice)}${solUsd ? ` (~${formatUsd(currentPrice * (solUsd || 0))})` : ''}\n` +
       `Size: ${formatSol(buySol)}${solUsd ? ` (~${formatUsd(entryUsd)})` : ''}\n` +
       `Liquidity: ${formatUsd(liquidityUsd)}\n` +
       `Tokens: ${tokenAmount.toLocaleString()}`,
-      linkRow({ mint: mintStr, alpha: 'force_buy', tx: tx.txid })
+      linkRow({ mint: mintStr, alpha: 'force_buy', tx: tx.txid, chartUrl })
     ), { chatId: TELEGRAM_CHAT_ID });
     
     // Start exit management
@@ -2175,10 +2177,16 @@ async function manageExit(mintStr: string) {
         const exitUsd = exitSol * (solUsd || 0);
         const pnlUsd = exitUsd - entryUsd;
         
+        // Get token name for display
+        const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+        const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+        const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+        
         await alert(
-          `🛡️ Max loss protection: <code>${short(mintStr)}</code>\n` +
+          `🛡️ Max loss protection: <b>${tokenDisplay}</b>\n` +
           `Loss: ${currentLossPct.toFixed(1)}% (limit: ${MAX_LOSS_PCT}%)\n` +
-          `Forcing exit to prevent further losses.`
+          `Forcing exit to prevent further losses.`,
+          linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
         );
         
         recordTrade({
