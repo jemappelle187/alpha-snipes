@@ -775,10 +775,11 @@ bot.onText(/^\/open$/, async (msg) => {
     // Get token name for display (quick fetch with long cache)
     const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
     const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+    const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : `https://dexscreener.com/solana/${mintStr}`;
     
     const currentPrice = await getQuotePrice(pos.mint).catch(() => null);
     if (!currentPrice || !isValidPrice(currentPrice)) {
-      lines.push(`<b>${tokenDisplay}</b>  [fetching...]`);
+      lines.push(`<a href="${chartUrl}">${tokenDisplay}</a>  [fetching...]`);
       continue;
     }
     
@@ -787,7 +788,7 @@ bot.onText(/^\/open$/, async (msg) => {
     const priceRatio = Math.max(currentPrice / pos.entryPrice, pos.entryPrice / currentPrice);
     if (priceRatio > 10) {
       lines.push(
-        `<b>${tokenDisplay}</b>  [price unreliable]\n` +
+        `<a href="${chartUrl}">${tokenDisplay}</a>  [price unreliable]\n` +
         `  Entry: ${formatSol(pos.entryPrice)}  |  Current: [unreliable]\n` +
         `  ⏳ EARLY TP  |  <code>${esc(String(Math.floor((Date.now() - pos.entryTime) / 60000)))}</code>m\n`
       );
@@ -801,8 +802,12 @@ bot.onText(/^\/open$/, async (msg) => {
     const phaseLabel = pos.phase === 'trailing' ? '🎯 TRAILING' : '⏳ EARLY TP';
     const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
     
+    // Highlight profit/loss with emojis and colors
+    const profitEmoji = uPct >= 0 ? '🟢' : '🔴';
+    const pctColor = uPct >= 0 ? '' : ''; // Telegram HTML doesn't support colors, use emojis instead
+    
     lines.push(
-      `<b>${tokenDisplay}</b>  <code>${esc(sign + uPct.toFixed(1))}</code>%  |  ${sign}${formatUsd(uUsd)}\n` +
+      `${profitEmoji} <a href="${chartUrl}"><b>${tokenDisplay}</b></a>  <code>${esc(sign + uPct.toFixed(1))}</code>%  |  ${sign}${formatUsd(uUsd)}\n` +
       `  Entry: ${formatSol(pos.entryPrice)}  |  Now: ${formatSol(currentPrice)}\n` +
       `  ${phaseLabel}  |  <code>${esc(String(durationMin))}</code>m\n`
     );
