@@ -121,13 +121,24 @@
 
 ## 🐛 Issues Found
 
-### Issue 1: False Max Loss Protection Trigger
-- **Status:** ✅ **FIXED**
-- **Description:** Max loss protection triggered incorrectly (-99.9%) when BUY quote fallback returned unreliable price (7.593e-7 vs actual ~7.4e-4)
-- **Root Cause:** BUY quote fallback can return incorrect prices when SELL quote is rate-limited, and this was used for max loss calculation
-- **Fix:** Added sanity check to skip max loss protection if price ratio >10x from entry price (likely bad price from fallback)
-- **Commit:** `9527a2c` - "Fix false max loss protection trigger from unreliable BUY quote fallback prices"
-- **Note:** Bot will now wait for next price check instead of triggering false exit
+### Issue 1: False Max Loss Protection Trigger & Incorrect PnL Display
+- **Status:** ✅ **FIXED & VERIFIED**
+- **Description:** 
+  - Max loss protection triggered incorrectly (-99.9%) when BUY quote fallback returned unreliable price
+  - `/open` command showed false -99.9% PnL for positions that were actually profitable
+  - Sentry could trigger false exits from bad prices
+- **Root Cause:** BUY quote fallback can return incorrect prices (e.g., 3.228e-7 vs actual 3.780e-4 = 1171x off) when SELL quote is rate-limited
+- **Fix:** Added sanity checks (price ratio >10x from entry) to:
+  - Skip max loss protection when price is unreliable
+  - Show `[price unreliable]` in `/open` instead of false PnL
+  - Skip sentry checks when price is unreliable
+- **Commits:** 
+  - `9527a2c` - "Fix false max loss protection trigger from unreliable BUY quote fallback prices"
+  - `3a2adf5` - "Fix /open command and sentry to handle unreliable BUY quote fallback prices"
+- **Verification:** 
+  - Before fix: `/open` showed -99.9% for both positions
+  - After fix: `/open` shows realistic PnL (-8.4% and +31.5%)
+  - Bot correctly waits for reliable prices instead of using bad fallback data
 
 ---
 
