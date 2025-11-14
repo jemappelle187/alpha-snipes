@@ -2086,6 +2086,14 @@ async function manageExit(mintStr: string) {
     consecutivePriceFailures = 0; // Reset on successful price fetch
     lastPrice = price; // Update for next iteration's dynamic polling
     
+    // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
+    // Don't use it for max loss protection - wait for next price check
+    const priceRatio = Math.max(price / pos.entryPrice, pos.entryPrice / price);
+    if (priceRatio > 10) {
+      dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${pos.entryPrice.toExponential(3)}, current: ${price.toExponential(3)})`);
+      continue; // Skip this iteration, wait for next price check
+    }
+    
     // Max loss protection: force exit if down >20% from entry
     const currentLossPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
     if (currentLossPct <= MAX_LOSS_PCT) {
