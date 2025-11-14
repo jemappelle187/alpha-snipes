@@ -2658,6 +2658,22 @@ async function main() {
       console.error('[STARTUP] Scan failed:', err);
     });
   }
+  
+  // Restart exit managers for all loaded positions
+  const loadedPositions = Object.keys(openPositions);
+  if (loadedPositions.length > 0) {
+    console.log(`🔄 Restarting exit managers for ${loadedPositions.length} loaded position(s)...`);
+    for (const mintStr of loadedPositions) {
+      const pos = openPositions[mintStr];
+      if (!pos) continue;
+      
+      // Restart exit manager (but not sentry, as sentry window has passed)
+      manageExit(mintStr).catch((err) => {
+        console.error(`[STARTUP] Failed to restart exit manager for ${short(mintStr)}:`, err);
+      });
+    }
+    console.log('✅ Exit managers restarted');
+  }
 }
 
 async function scanRecentAlphaTransactions() {
