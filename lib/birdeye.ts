@@ -36,12 +36,6 @@ export type BirdeyeTokenSnapshot = {
 
 /**
  * Fetch wallet trades since a given timestamp
- * @param wallet - Wallet address
- * @param sinceUnixSec - Unix timestamp in seconds
- * @returns Array of trades
- */
-/**
- * Fetch wallet trades since a given timestamp
  * NOTE: This endpoint requires a paid Birdeye plan (Starter $99/mo or higher)
  * Free tier does not include wallet transaction history endpoints
  * @param wallet - Wallet address
