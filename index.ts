@@ -1691,24 +1691,33 @@ function refreshWatchers() {
 
 setInterval(refreshWatchers, 60_000);
 
-// Polling backup: Check for missed transactions every 15 seconds
+// Polling backup: Check for missed transactions every 10 seconds
 // This catches transactions that onLogs() might miss due to RPC issues
-// Enhanced frequency (15s vs 30s) improves catch rate from ~95% to ~98%
+// Only process transactions from the last 30 seconds to avoid old signals
 let lastPollTime = new Map<string, number>();
 setInterval(async () => {
+  const now = Date.now();
+  const maxAge = 30_000; // Only process transactions from last 30 seconds
+  
   for (const alpha of ACTIVE_ALPHAS) {
     try {
       const pk = new PublicKey(alpha);
-      const lastSeen = lastPollTime.get(alpha) || Date.now() - 60_000; // Default to 1 min ago
+      const lastSeen = lastPollTime.get(alpha) || now - maxAge; // Default to 30s ago
       const sigs = await connection.getSignaturesForAddress(pk, {
-        limit: 20, // Increased from 10 to catch more transactions
+        limit: 10, // Reduced to focus on recent transactions
         until: undefined,
       });
 
       for (const sigInfo of sigs) {
         if (!sigInfo.blockTime) continue;
         const txTime = sigInfo.blockTime * 1000;
-        if (txTime <= lastSeen) break; // Already processed
+        const txAge = now - txTime;
+        
+        // Skip transactions older than 30 seconds (already processed or too old)
+        if (txAge > maxAge || txTime <= lastSeen) {
+          if (txTime <= lastSeen) break; // Already processed, rest are older
+          continue; // Too old, skip
+        }
 
         // Skip if we already processed this signature
         if (seenSignatures.has(sigInfo.signature)) continue;
@@ -1732,9 +1741,12 @@ setInterval(async () => {
         }
       }
 
-      // Update last poll time
-      if (sigs.length > 0 && sigs[0].blockTime) {
-        lastPollTime.set(alpha, sigs[0].blockTime * 1000);
+      // Update last poll time to most recent processed transaction
+      const mostRecent = sigs.find(s => s.blockTime && (now - s.blockTime * 1000) <= maxAge);
+      if (mostRecent?.blockTime) {
+        lastPollTime.set(alpha, mostRecent.blockTime * 1000);
+      } else {
+        lastPollTime.set(alpha, now); // Update to current time if no recent transactions
       }
     } catch (err: any) {
       // Retry on RPC errors
@@ -2251,10 +2263,10 @@ async function manageExit(mintStr: string) {
 
   while (openPositions[mintStr]) {
     // Dynamic polling: check more frequently if price dropped significantly last check
-    const priceDropPct = lastPrice > 0 && pos.highPrice > 0 
+    const priceDropFromHighPct = lastPrice > 0 && pos.highPrice > 0 
       ? ((pos.highPrice - lastPrice) / pos.highPrice) * 100 
       : 0;
-    const pollInterval = priceDropPct > 20 ? 1000 : 5000; // 1s if >20% drop from high, else 5s
+    const pollInterval = priceDropFromHighPct > 20 ? 1000 : 5000; // 1s if >20% drop from high, else 5s
     
     await new Promise((r) => setTimeout(r, pollInterval));
     const price = await getQuotePrice(pos.mint);
@@ -2504,8 +2516,56 @@ async function manageExit(mintStr: string) {
 
     if (price > pos.highPrice) pos.highPrice = price;
     
-    // Milestone alerts: notify at 10%, 20%, 30%, 100%, 200%, 500% gains
+    // Hard profit target: Exit at +200% to secure profits (user requested)
     const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+    if (gainPct >= 200) {
+      dbg(`[EXIT] Hard profit target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
+      try {
+        const tx = await swapTokenForSOL(pos.mint, pos.qty);
+        const solUsd = await getSolUsd();
+        const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+        const entryUsd = pos.costSol * (solUsd || 0);
+        const exitUsd = exitSol * (solUsd || 0);
+        const pnlUsd = exitUsd - entryUsd;
+        const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : 0;
+        
+        const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+        const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+        const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+        
+        await tgQueue.enqueue(() => bot.sendMessage(
+          TELEGRAM_CHAT_ID,
+          `🎯 Hard profit target: <b>${tokenDisplay}</b>\n` +
+          `Gain: +${gainPct.toFixed(1)}% (target: +200%)\n` +
+          `Securing profits to limit risk.`,
+          linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
+        ), { chatId: TELEGRAM_CHAT_ID });
+        
+        recordTrade({
+          t: Date.now(),
+          kind: 'sell',
+          mode: IS_PAPER ? 'paper' : 'live',
+          mint: mintStr,
+          alpha: pos.alpha,
+          exitPriceSol: price,
+          exitUsd,
+          pnlSol: exitSol - pos.costSol,
+          pnlUsd,
+          pnlPct,
+          durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+          tx: tx.txid,
+        });
+        
+        delete openPositions[mintStr];
+        savePositions(serializeLivePositions(openPositions));
+        return;
+      } catch (err: any) {
+        dbg(`[EXIT] Failed to exit on hard profit target for ${short(mintStr)}: ${err.message || err}`);
+        // Continue to other exit checks
+      }
+    }
+    
+    // Milestone alerts: notify at 10%, 20%, 30%, 100%, 200%, 500% gains
     const milestones = [10, 20, 30, 100, 200, 500];
     const lastMilestone = (pos as any).lastMilestone || 0;
     const nextMilestone = milestones.find(m => gainPct >= m && m > lastMilestone);
