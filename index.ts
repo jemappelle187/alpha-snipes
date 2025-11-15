@@ -2206,6 +2206,26 @@ async function manageExit(mintStr: string) {
     if (!price || !isValidPrice(price)) {
       consecutivePriceFailures++;
       if (consecutivePriceFailures >= MAX_PRICE_FAILURES) {
+        // Check if error is due to rate limiting - if so, just remove position without trying to swap
+        const isRateLimited = typeof price === 'undefined' || 
+          (typeof price === 'object' && price !== null && 'message' in price && 
+           String(price.message || '').includes('rate limit') || 
+           String(price.message || '').includes('429') ||
+           String(price.message || '').includes('cooldown'));
+        
+        if (isRateLimited) {
+          // Rate limited - just remove position without trying to swap
+          dbg(`[EXIT] Removing position ${short(mintStr)} due to persistent rate limits (price unavailable)`);
+          await alert(
+            `⚠️ Position removed: <code>${short(mintStr)}</code>\n` +
+            `Price unavailable due to rate limits. Position removed from tracking.`
+          );
+          delete openPositions[mintStr];
+          savePositions(serializeLivePositions(openPositions));
+          return;
+        }
+        
+        // Not rate limited - try to force exit
         try {
           dbg(`[EXIT] Dead token detected for ${short(mintStr)} - forcing exit`);
           const tx = await swapTokenForSOL(pos.mint, pos.qty);
@@ -2240,7 +2260,22 @@ async function manageExit(mintStr: string) {
           savePositions(serializeLivePositions(openPositions));
           return;
         } catch (err: any) {
-          await alert(`❌ Dead token exit failed for ${short(mintStr)}: ${err.message || err}`);
+          // If swap fails due to rate limits, just remove position
+          const errMsg = String(err?.message || err || '');
+          if (errMsg.includes('rate limit') || errMsg.includes('429') || errMsg.includes('cooldown')) {
+            dbg(`[EXIT] Swap failed due to rate limits for ${short(mintStr)} - removing position`);
+            await alert(
+              `⚠️ Position removed: <code>${short(mintStr)}</code>\n` +
+              `Exit failed due to rate limits. Position removed from tracking.`
+            );
+            delete openPositions[mintStr];
+            savePositions(serializeLivePositions(openPositions));
+            return;
+          }
+          // Other error - log but don't spam
+          if (consecutivePriceFailures % 5 === 0) { // Only alert every 5th failure
+            await alert(`❌ Dead token exit failed for ${short(mintStr)}: ${errMsg}`);
+          }
         }
       }
       continue;
