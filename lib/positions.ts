@@ -11,6 +11,7 @@ export type StoredPosition = {
   entryTime: number;
   alpha?: string;
   phase?: 'early' | 'trailing';
+  entryLiquidityUsd?: number;
 };
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -56,6 +57,7 @@ export function serializeLivePositions(
       entryTime: number;
       alpha?: string;
       phase?: 'early' | 'trailing';
+      entryLiquidityUsd?: number;
     }
   >
 ): PositionMap {
@@ -70,6 +72,7 @@ export function serializeLivePositions(
       entryTime: pos.entryTime,
       alpha: pos.alpha,
       phase: pos.phase,
+      entryLiquidityUsd: pos.entryLiquidityUsd,
     };
   }
   return out;
@@ -85,6 +88,7 @@ export function hydratePositions(data: PositionMap) {
     entryTime: number;
     alpha?: string;
     phase?: 'early' | 'trailing';
+    entryLiquidityUsd?: number;
   }> = {};
 
   for (const entry of Object.values(data)) {
@@ -99,6 +103,7 @@ export function hydratePositions(data: PositionMap) {
         entryTime: entry.entryTime,
         alpha: entry.alpha,
         phase: entry.phase ?? 'early',
+        entryLiquidityUsd: entry.entryLiquidityUsd,
       };
     } catch (err) {
       console.warn('[POSITIONS] Failed to hydrate entry', entry.mint, err);
