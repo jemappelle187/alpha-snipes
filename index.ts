@@ -1767,31 +1767,42 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
       continue;
     }
 
-    // Birdeye validation: cross-check RPC BUY signal with Birdeye
+    // Birdeye validation: cross-check RPC BUY signal with Birdeye (optional)
     // Also updates SOL spent if alpha not in account keys (detected via token balances)
-    if (signal.source === 'rpc' && signal.txHash) {
-      const blockTimeSec = Math.floor(signal.blockTimeMs / 1000);
-      const validation = await validateBuyWithBirdeye(signer, mint, signal.txHash, blockTimeSec);
-      
-      if (!validation.confirmed) {
-        dbg(
-          `[BIRDEYE] RPC BUY signal for ${short(mint)} NOT confirmed by Birdeye - skipping`
-        );
-        continue; // Skip this signal if Birdeye doesn't confirm it
-      } else if (validation.trade) {
-        // Update SOL spent and entry price from Birdeye if not available from RPC
-        if (signal.solSpent === 0 && validation.trade.amountSol > 0) {
-          signal.solSpent = validation.trade.amountSol;
-          signal.alphaEntryPrice = validation.trade.amountSol / signal.tokenDelta;
+    // NOTE: Birdeye validation is optional - if it fails or API key not configured, we still proceed with RPC signal
+    if (signal.source === 'rpc' && signal.txHash && process.env.BIRDEYE_API_KEY) {
+      try {
+        const blockTimeSec = Math.floor(signal.blockTimeMs / 1000);
+        const validation = await validateBuyWithBirdeye(signer, mint, signal.txHash, blockTimeSec);
+        
+        if (validation.confirmed && validation.trade) {
+          // Update SOL spent and entry price from Birdeye if not available from RPC
+          if (signal.solSpent === 0 && validation.trade.amountSol > 0) {
+            signal.solSpent = validation.trade.amountSol;
+            signal.alphaEntryPrice = validation.trade.amountSol / signal.tokenDelta;
+            dbg(
+              `[BIRDEYE] Updated SOL spent from Birdeye | ${short(mint)} | SOL: ${validation.trade.amountSol.toFixed(4)} | Entry Price: ${signal.alphaEntryPrice.toExponential(3)}`
+            );
+          } else {
+            dbg(
+              `[BIRDEYE] RPC BUY signal confirmed by Birdeye | ${short(mint)} | Birdeye SOL: ${validation.trade.amountSol.toFixed(4)} | RPC SOL: ${signal.solSpent.toFixed(4)}`
+            );
+          }
+        } else if (!validation.confirmed) {
+          // Birdeye didn't confirm, but we still proceed with RPC signal (Birdeye may not have the data yet)
           dbg(
-            `[BIRDEYE] Updated SOL spent from Birdeye | ${short(mint)} | SOL: ${validation.trade.amountSol.toFixed(4)} | Entry Price: ${signal.alphaEntryPrice.toExponential(3)}`
-          );
-        } else {
-          dbg(
-            `[BIRDEYE] RPC BUY signal confirmed by Birdeye | ${short(mint)} | Birdeye SOL: ${validation.trade.amountSol.toFixed(4)} | RPC SOL: ${signal.solSpent.toFixed(4)}`
+            `[BIRDEYE] RPC BUY signal for ${short(mint)} not confirmed by Birdeye, but proceeding with RPC signal (Birdeye may not have indexed yet)`
           );
         }
+      } catch (err: any) {
+        // Birdeye validation failed (API error, rate limit, etc.) - still proceed with RPC signal
+        dbg(
+          `[BIRDEYE] Validation failed for ${short(mint)}: ${err.message || err}, proceeding with RPC signal`
+        );
       }
+    } else if (signal.source === 'rpc' && signal.txHash && !process.env.BIRDEYE_API_KEY) {
+      // No Birdeye API key - proceed with RPC signal only
+      dbg(`[BIRDEYE] No API key configured, proceeding with RPC signal only for ${short(mint)}`);
     }
 
     seenMints.add(mint);
