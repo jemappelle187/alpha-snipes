@@ -527,9 +527,16 @@ function classifyAlphaSignals(tx: any, alpha: string, sig?: string): AlphaSignal
         }
       }
       
-      dbg(
-        `[CLASSIFY] skip tx ${sig?.slice(0, 8)}: solSpent=${solSpent.toFixed(6)} < dust ${DUST_SOL_SPENT}`
-      );
+      // Enhanced logging: show what type of transaction this is
+      if (solReceived >= DUST_SOL_SPENT) {
+        dbg(
+          `[CLASSIFY] skip tx ${sig?.slice(0, 8)}: SELL detected (solReceived=${solReceived.toFixed(6)}), not BUY`
+        );
+      } else {
+        dbg(
+          `[CLASSIFY] skip tx ${sig?.slice(0, 8)}: solSpent=${solSpent.toFixed(6)} < dust ${DUST_SOL_SPENT} (likely transfer/other, not swap)`
+        );
+      }
       return [];
     }
 
@@ -574,7 +581,13 @@ function classifyAlphaSignals(tx: any, alpha: string, sig?: string): AlphaSignal
     }
 
     if (!gains.length) {
-      dbg(`[CLASSIFY] tx ${sig?.slice(0, 8)} had no qualifying token balance increases`);
+      // Enhanced logging: show why no gains were found
+      const allPostBalances = postBalances.filter((p: any) => p?.owner === alpha && p?.mint);
+      if (allPostBalances.length === 0) {
+        dbg(`[CLASSIFY] tx ${sig?.slice(0, 8)}: no token balances found for alpha (likely transfer/other, not swap)`);
+      } else {
+        dbg(`[CLASSIFY] tx ${sig?.slice(0, 8)}: found ${allPostBalances.length} token balance(s) but none qualified (filtered by MIN_BALANCE or MIN_SIZE_INCREASE_RATIO)`);
+      }
       return [];
     }
 
@@ -1468,7 +1481,7 @@ async function swapTokenForSOL(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function getQuotePrice(mint: PublicKey): Promise<number | null> {
-  const SOL = 'So11111111111111111111111111111111111111112';
+    const SOL = 'So11111111111111111111111111111111111111112';
   const shortMint = short(mint.toBase58());
   
   try {
@@ -2145,7 +2158,7 @@ async function manageExit(mintStr: string) {
   const MAX_LOSS_PCT = -20; // Force exit at -20% loss
 
   let lastPrice = pos.entryPrice;
-  
+
   while (openPositions[mintStr]) {
     // Dynamic polling: check more frequently if price dropped significantly last check
     const priceDropPct = lastPrice > 0 && pos.highPrice > 0 
