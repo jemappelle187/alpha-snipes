@@ -483,17 +483,29 @@ function classifyAlphaSignals(tx: any, alpha: string, sig?: string): AlphaSignal
     const normalize = (k: any) =>
       typeof k === 'string' ? k : k?.pubkey ?? (typeof k?.toBase58 === 'function' ? k.toBase58() : '');
     const alphaIndex = keys.findIndex((k) => normalize(k) === alpha);
-    if (alphaIndex === -1) {
-      dbg(`[CLASSIFY] alpha ${short(alpha)} not found in account keys for tx ${sig?.slice(0, 8)}`);
-      return [];
-    }
+    const alphaInAccountKeys = alphaIndex !== -1;
 
-    const preLamports = Number(tx?.meta?.preBalances?.[alphaIndex] ?? 0);
-    const postLamports = Number(tx?.meta?.postBalances?.[alphaIndex] ?? 0);
-    const solSpent = (preLamports - postLamports) / 1e9;
-    const solReceived = (postLamports - preLamports) / 1e9;
+    // Method 1: Check SOL balance changes (if alpha is in account keys)
+    let solSpent = 0;
+    let solReceived = 0;
+    if (alphaInAccountKeys) {
+      const preLamports = Number(tx?.meta?.preBalances?.[alphaIndex] ?? 0);
+      const postLamports = Number(tx?.meta?.postBalances?.[alphaIndex] ?? 0);
+      solSpent = (preLamports - postLamports) / 1e9;
+      solReceived = (postLamports - preLamports) / 1e9;
+    } else {
+      // Alpha not in account keys - check token balances instead
+      // This catches transactions via DEX aggregators, token transfers, etc.
+      dbg(`[CLASSIFY] alpha ${short(alpha)} not in account keys for tx ${sig?.slice(0, 8)}, checking token balances...`);
+    }
     
-    if (!Number.isFinite(solSpent) || solSpent < DUST_SOL_SPENT) {
+    // If alpha not in account keys, we can't verify SOL spent directly
+    // But we can still detect token balance increases (BUY signals)
+    // We'll use Birdeye to get actual SOL spent later
+    if (!alphaInAccountKeys) {
+      // Skip SOL-based filtering if alpha not in account keys
+      // Proceed to token balance checking below
+    } else if (!Number.isFinite(solSpent) || solSpent < DUST_SOL_SPENT) {
       // Check if this is a SELL (SOL received, tokens decreased)
       if (Number.isFinite(solReceived) && solReceived >= DUST_SOL_SPENT) {
         const preBalances = tx?.meta?.preTokenBalances ?? [];
@@ -597,25 +609,36 @@ function classifyAlphaSignals(tx: any, alpha: string, sig?: string): AlphaSignal
       return [];
     }
 
-    const alphaEntryPrice = solSpent / totalDelta;
-    if (!isValidPrice(alphaEntryPrice)) {
-      dbg(`[CLASSIFY] invalid alpha entry price ${alphaEntryPrice} for tx ${sig?.slice(0, 8)}`);
-      return [];
+    // If alpha not in account keys, we can't calculate exact SOL spent
+    // Set a placeholder - Birdeye validation will provide actual SOL spent
+    let alphaEntryPrice = 0;
+    if (alphaInAccountKeys && solSpent > 0) {
+      alphaEntryPrice = solSpent / totalDelta;
+      if (!isValidPrice(alphaEntryPrice)) {
+        dbg(`[CLASSIFY] invalid alpha entry price ${alphaEntryPrice} for tx ${sig?.slice(0, 8)}`);
+        return [];
+      }
+    } else if (!alphaInAccountKeys) {
+      // Alpha not in account keys - we'll get SOL spent from Birdeye
+      // For now, use a placeholder price (will be updated by Birdeye validation)
+      dbg(`[CLASSIFY] alpha not in account keys, will get SOL spent from Birdeye for tx ${sig?.slice(0, 8)}`);
+      alphaEntryPrice = 0; // Placeholder, Birdeye will provide actual
     }
 
     const blockTimeMs = tx?.blockTime ? tx.blockTime * 1000 : Date.now();
     const signalAgeSec = tx?.blockTime ? Math.max(0, (Date.now() - blockTimeMs) / 1000) : 0;
 
     return gains.map((g) => {
+      const detectionMethod = alphaInAccountKeys ? 'account_keys' : 'token_balances';
       dbg(
-        `[CLASSIFY] BUY | source=rpc | Alpha: ${short(alpha)} | Mint: ${short(
+        `[CLASSIFY] BUY | source=rpc | method=${detectionMethod} | Alpha: ${short(alpha)} | Mint: ${short(
           g.mint
-        )} | solSpent=${solSpent.toFixed(4)} | tokens=${g.delta.toFixed(2)} | entryPrice=${alphaEntryPrice.toExponential(3)} | previousBalance=${g.preAmount.toFixed(2)}`
+        )} | solSpent=${solSpent > 0 ? solSpent.toFixed(4) : 'TBD (Birdeye)'} | tokens=${g.delta.toFixed(2)} | entryPrice=${alphaEntryPrice > 0 ? alphaEntryPrice.toExponential(3) : 'TBD (Birdeye)'} | previousBalance=${g.preAmount.toFixed(2)}`
       );
 
       return {
         mint: g.mint,
-        solSpent,
+        solSpent: solSpent > 0 ? solSpent : 0, // Will be updated by Birdeye if not in account keys
         tokenDelta: g.delta,
         alphaEntryPrice,
         alphaPreBalance: g.preAmount,
@@ -1745,6 +1768,7 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
     }
 
     // Birdeye validation: cross-check RPC BUY signal with Birdeye
+    // Also updates SOL spent if alpha not in account keys (detected via token balances)
     if (signal.source === 'rpc' && signal.txHash) {
       const blockTimeSec = Math.floor(signal.blockTimeMs / 1000);
       const validation = await validateBuyWithBirdeye(signer, mint, signal.txHash, blockTimeSec);
@@ -1755,9 +1779,18 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
         );
         continue; // Skip this signal if Birdeye doesn't confirm it
       } else if (validation.trade) {
-        dbg(
-          `[BIRDEYE] RPC BUY signal confirmed by Birdeye | ${short(mint)} | Birdeye SOL: ${validation.trade.amountSol.toFixed(4)} | RPC SOL: ${signal.solSpent.toFixed(4)}`
-        );
+        // Update SOL spent and entry price from Birdeye if not available from RPC
+        if (signal.solSpent === 0 && validation.trade.amountSol > 0) {
+          signal.solSpent = validation.trade.amountSol;
+          signal.alphaEntryPrice = validation.trade.amountSol / signal.tokenDelta;
+          dbg(
+            `[BIRDEYE] Updated SOL spent from Birdeye | ${short(mint)} | SOL: ${validation.trade.amountSol.toFixed(4)} | Entry Price: ${signal.alphaEntryPrice.toExponential(3)}`
+          );
+        } else {
+          dbg(
+            `[BIRDEYE] RPC BUY signal confirmed by Birdeye | ${short(mint)} | Birdeye SOL: ${validation.trade.amountSol.toFixed(4)} | RPC SOL: ${signal.solSpent.toFixed(4)}`
+          );
+        }
       }
     }
 
