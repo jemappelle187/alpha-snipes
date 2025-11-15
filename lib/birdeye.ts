@@ -40,6 +40,14 @@ export type BirdeyeTokenSnapshot = {
  * @param sinceUnixSec - Unix timestamp in seconds
  * @returns Array of trades
  */
+/**
+ * Fetch wallet trades since a given timestamp
+ * NOTE: This endpoint requires a paid Birdeye plan (Starter $99/mo or higher)
+ * Free tier does not include wallet transaction history endpoints
+ * @param wallet - Wallet address
+ * @param sinceUnixSec - Unix timestamp in seconds
+ * @returns Array of trades
+ */
 export async function fetchWalletTradesSince(
   wallet: string,
   sinceUnixSec: number
@@ -66,12 +74,28 @@ export async function fetchWalletTradesSince(
     if (!response.ok) {
       if (response.status === 401) {
         const errorText = await response.text().catch(() => '');
-        console.warn(`[BIRDEYE] 401 Unauthorized - API key authentication failed`);
-        console.warn(`[BIRDEYE] Possible causes:`);
-        console.warn(`[BIRDEYE]   1. API key not active or invalid`);
-        console.warn(`[BIRDEYE]   2. IP whitelisting enabled - add VM IP to whitelist in Birdeye dashboard`);
-        console.warn(`[BIRDEYE]   3. API key permissions insufficient`);
-        console.warn(`[BIRDEYE] Error details: ${errorText.slice(0, 200)}`);
+        const errorJson = (() => {
+          try {
+            return JSON.parse(errorText);
+          } catch {
+            return { message: errorText };
+          }
+        })();
+        
+        // Check if it's a plan/permission issue
+        if (errorJson.message?.includes('sufficient permissions') || errorJson.message?.includes('upgrade')) {
+          console.warn(`[BIRDEYE] ⚠️  Wallet trades endpoint requires a paid Birdeye plan`);
+          console.warn(`[BIRDEYE] Free tier does not include wallet transaction history endpoints`);
+          console.warn(`[BIRDEYE] Bot will continue using RPC-only detection (primary method)`);
+          console.warn(`[BIRDEYE] To enable Birdeye backfill/validation, upgrade to Starter ($99/mo) or higher`);
+          console.warn(`[BIRDEYE] See: https://bds.birdeye.so/pricing`);
+        } else {
+          console.warn(`[BIRDEYE] 401 Unauthorized - API key authentication failed`);
+          console.warn(`[BIRDEYE] Possible causes:`);
+          console.warn(`[BIRDEYE]   1. API key not active or invalid`);
+          console.warn(`[BIRDEYE]   2. IP whitelisting enabled - add VM IP to whitelist`);
+          console.warn(`[BIRDEYE]   3. API key permissions insufficient`);
+        }
         return [];
       }
       if (response.status === 429) {
