@@ -56,6 +56,14 @@ import {
   nextEntriesToCheck,
 } from './lib/watchlist.js';
 import {
+  performHealthCheck,
+  attemptAutoFix,
+  recordAlphaSignal,
+  recordPriceFailure,
+  recordPriceSuccess,
+  getHealthStatus,
+} from './lib/health_check.js';
+import {
   fetchWalletTradesSince,
   fetchTokenSnapshot,
   validateBuyWithBirdeye,
