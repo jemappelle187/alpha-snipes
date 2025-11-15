@@ -1997,13 +1997,19 @@ async function executeCopyTradeFromSignal(opts: {
     const buy = await swapSOLforToken(mintPk, buySol);
       const entryTime = Date.now();
     const qty = BigInt(buy.outAmount);
-
+    
+    // Calculate actual entry price from the buy transaction
+    // Entry price = SOL spent / tokens received
+    const tokensReceived = Number(qty);
+    const actualEntryPrice = tokensReceived > 0 ? buySol / tokensReceived : start;
+    const finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : start;
+    
     openPositions[mintStr] = {
         mint: mintPk,
         qty,
       costSol: buySol,
-        entryPrice: start,
-        highPrice: start,
+        entryPrice: finalEntryPrice,
+        highPrice: finalEntryPrice,
         entryTime,
       alpha,
       };
@@ -2011,7 +2017,7 @@ async function executeCopyTradeFromSignal(opts: {
 
       const solUsd = await getSolUsd();
     const buyUsd = buySol * (solUsd || 0);
-      const refPriceUsd = start * (solUsd || 0);
+      const refPriceUsd = finalEntryPrice * (solUsd || 0);
       const msgPrefix = source === 'watchlist' ? `${tag}🔁 Watchlist auto-buy` : `${tag}✅ Bought`;
       // tokenDisplay and chartUrl already defined above from liquidity fetch
     const sizingLine = `Size: ${formatSol(buySol)} (${sizing.multiplier >= 1 ? '▲' : '▼'}×${sizing.multiplier.toFixed(
@@ -2021,9 +2027,9 @@ async function executeCopyTradeFromSignal(opts: {
       () =>
         bot.sendMessage(
         TELEGRAM_CHAT_ID,
-          `${msgPrefix} <b>${tokenDisplay}</b>\n` +
+          `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
           `Size: ${formatSol(buySol)}${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
-          `Entry: ${start.toFixed(10)} SOL/token${solUsd ? ` (~${formatUsd(refPriceUsd)})` : ''}\n` +
+          `Entry: ${formatSol(finalEntryPrice)} SOL/token${solUsd ? ` (~${formatUsd(refPriceUsd)})` : ''}\n` +
           `${sizingLine}`,
           linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
         ),
