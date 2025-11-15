@@ -50,9 +50,10 @@ export async function fetchWalletTradesSince(
   }
 
   try {
-    // Birdeye wallet trades endpoint
-    // Note: Actual endpoint may vary - this is a common pattern
-    const url = `${BIRDEYE_API_BASE}/v1/wallet/trades?address=${wallet}&from=${sinceUnixSec}`;
+    // Birdeye wallet trades endpoint: /wallet/trades_seek_by_time
+    // Docs: https://docs.birdeye.so/reference/get-wallet-trades-seek-by-time
+    // Parameters: address, type (all/buy/sell), limit, offset, from_time, to_time
+    const url = `${BIRDEYE_API_BASE}/v1/wallet/trades_seek_by_time?address=${wallet}&type=all&from_time=${sinceUnixSec}&limit=100`;
     
     const response = await fetch(url, {
       headers: {
@@ -72,47 +73,43 @@ export async function fetchWalletTradesSince(
 
     const json: any = await response.json();
     
-    // Parse response - structure may vary based on actual API
+    // Parse response based on Birdeye API structure
+    // Expected format: { success: true, data: { items: [...] } } or { data: [...] }
     const trades: BirdeyeTrade[] = [];
     
-    if (json.success && Array.isArray(json.data?.trades)) {
-      for (const trade of json.data.trades) {
-        try {
-          trades.push({
-            txHash: trade.txHash || trade.signature || '',
-            mint: trade.mint || trade.tokenAddress || '',
-            side: (trade.side || trade.type || '').toLowerCase() === 'sell' ? 'sell' : 'buy',
-            amountToken: parseFloat(trade.amountToken || trade.tokenAmount || '0') || 0,
-            amountSol: parseFloat(trade.amountSol || trade.solAmount || '0') || 0,
-            amountUsd: parseFloat(trade.amountUsd || trade.usdValue || '0') || 0,
-            priceUsd: parseFloat(trade.priceUsd || trade.price || '0') || 0,
-            timestamp: parseInt(trade.timestamp || trade.time || '0', 10) || 0,
-            symbol: trade.symbol || trade.tokenSymbol,
-            name: trade.name || trade.tokenName,
-          });
-        } catch (err) {
-          console.warn(`[BIRDEYE] Failed to parse trade: ${err}`);
-        }
-      }
-    } else if (Array.isArray(json.data)) {
-      // Alternative response format
-      for (const trade of json.data) {
-        try {
-          trades.push({
-            txHash: trade.txHash || trade.signature || '',
-            mint: trade.mint || trade.tokenAddress || '',
-            side: (trade.side || trade.type || '').toLowerCase() === 'sell' ? 'sell' : 'buy',
-            amountToken: parseFloat(trade.amountToken || trade.tokenAmount || '0') || 0,
-            amountSol: parseFloat(trade.amountSol || trade.solAmount || '0') || 0,
-            amountUsd: parseFloat(trade.amountUsd || trade.usdValue || '0') || 0,
-            priceUsd: parseFloat(trade.priceUsd || trade.price || '0') || 0,
-            timestamp: parseInt(trade.timestamp || trade.time || '0', 10) || 0,
-            symbol: trade.symbol || trade.tokenSymbol,
-            name: trade.name || trade.tokenName,
-          });
-        } catch (err) {
-          console.warn(`[BIRDEYE] Failed to parse trade: ${err}`);
-        }
+    // Handle Birdeye response format
+    const items = json.data?.items || json.data?.trades || (Array.isArray(json.data) ? json.data : []);
+    
+    for (const trade of items) {
+      try {
+        // Birdeye trade structure (Solana):
+        // - signature/txHash: transaction signature
+        // - tokenAddress/mint: token mint address
+        // - type: "buy" or "sell"
+        // - amount: token amount
+        // - solAmount: SOL amount
+        // - usdValue: USD value
+        // - price: price per token
+        // - timestamp: Unix timestamp
+        // - symbol/name: token metadata
+        
+        const side = (trade.type || trade.side || '').toLowerCase();
+        const isSell = side === 'sell';
+        
+        trades.push({
+          txHash: trade.signature || trade.txHash || trade.tx || '',
+          mint: trade.tokenAddress || trade.mint || trade.token || '',
+          side: isSell ? 'sell' : 'buy',
+          amountToken: parseFloat(trade.amount || trade.tokenAmount || '0') || 0,
+          amountSol: parseFloat(trade.solAmount || trade.sol || '0') || 0,
+          amountUsd: parseFloat(trade.usdValue || trade.usd || '0') || 0,
+          priceUsd: parseFloat(trade.price || trade.priceUsd || '0') || 0,
+          timestamp: parseInt(trade.timestamp || trade.time || '0', 10) || 0,
+          symbol: trade.symbol || trade.tokenSymbol,
+          name: trade.name || trade.tokenName,
+        });
+      } catch (err) {
+        console.warn(`[BIRDEYE] Failed to parse trade: ${err}`);
       }
     }
 
@@ -143,7 +140,9 @@ export async function fetchTokenSnapshot(mint: string): Promise<BirdeyeTokenSnap
   }
 
   try {
-    // Birdeye token info endpoint
+    // Birdeye token overview endpoint: /token/overview
+    // Docs: https://docs.birdeye.so/reference/get-token-overview
+    // Returns: price, liquidity, volume, market cap, etc.
     const url = `${BIRDEYE_API_BASE}/v1/token/overview?address=${mint}`;
     
     const response = await fetch(url, {
@@ -188,15 +187,26 @@ export async function fetchTokenSnapshot(mint: string): Promise<BirdeyeTokenSnap
 
     const data = json.data;
     
+    // Birdeye token overview structure (Solana):
+    // - price: current price in SOL
+    // - priceUsd: current price in USD
+    // - liquidity: liquidity in SOL
+    // - liquidityUsd: liquidity in USD
+    // - volume24h: 24h volume
+    // - volume24hUsd: 24h volume in USD
+    // - marketCap: market capitalization
+    // - priceChange24h: 24h price change %
+    // - symbol/name: token metadata
+    
     return {
       price: parseFloat(data.price || data.priceSol || '0') || null,
       priceUsd: parseFloat(data.priceUsd || data.price || '0') || null,
-      liquidity: parseFloat(data.liquidity || '0') || null,
+      liquidity: parseFloat(data.liquidity || data.liquiditySol || '0') || null,
       liquidityUsd: parseFloat(data.liquidityUsd || data.liquidity || '0') || null,
-      volume24h: parseFloat(data.volume24h || data.volume24 || '0') || null,
-      volume24hUsd: parseFloat(data.volume24hUsd || data.volume24 || '0') || null,
-      marketCap: parseFloat(data.marketCap || data.mc || '0') || null,
-      priceChange24h: parseFloat(data.priceChange24h || data.priceChange24 || '0') || null,
+      volume24h: parseFloat(data.volume24h || data.volume24 || data.volume?.h24 || '0') || null,
+      volume24hUsd: parseFloat(data.volume24hUsd || data.volume24Usd || data.volume?.h24Usd || '0') || null,
+      marketCap: parseFloat(data.marketCap || data.mc || data.marketCapUsd || '0') || null,
+      priceChange24h: parseFloat(data.priceChange24h || data.priceChange24 || data.priceChange?.h24 || '0') || null,
       symbol: data.symbol || data.tokenSymbol,
       name: data.name || data.tokenName,
     };
