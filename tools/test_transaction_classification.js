@@ -4,8 +4,9 @@
  * Usage: node tools/test_transaction_classification.js <txSignature> <alphaWallet>
  */
 
-const { Connection, PublicKey } = require('@solana/web3.js');
-require('dotenv/config');
+import { Connection, PublicKey } from '@solana/web3.js';
+import dotenv from 'dotenv';
+dotenv.config();
 
 const TX_SIG = process.argv[2];
 const ALPHA_WALLET = process.argv[3] || '8zkJmeQS1J3GUkPvfboeT76bwojADU6dyTZsCBiMdCVp';
