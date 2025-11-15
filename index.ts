@@ -55,6 +55,13 @@ import {
   pruneExpired as pruneWatchlist,
   nextEntriesToCheck,
 } from './lib/watchlist.js';
+import {
+  fetchWalletTradesSince,
+  fetchTokenSnapshot,
+  validateBuyWithBirdeye,
+  type BirdeyeTrade,
+  type BirdeyeTokenSnapshot,
+} from './lib/birdeye.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Configuration
@@ -339,6 +346,8 @@ type AlphaSignal = {
   alphaPostBalance: number;
   blockTimeMs: number;
   signalAgeSec: number;
+  source?: 'rpc' | 'birdeye'; // Data source
+  txHash?: string; // Transaction hash for validation
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -586,7 +595,7 @@ function classifyAlphaSignals(tx: any, alpha: string, sig?: string): AlphaSignal
 
     return gains.map((g) => {
       dbg(
-        `[CLASSIFY] BUY | Alpha: ${short(alpha)} | Mint: ${short(
+        `[CLASSIFY] BUY | source=rpc | Alpha: ${short(alpha)} | Mint: ${short(
           g.mint
         )} | solSpent=${solSpent.toFixed(4)} | tokens=${g.delta.toFixed(2)} | entryPrice=${alphaEntryPrice.toExponential(3)} | previousBalance=${g.preAmount.toFixed(2)}`
       );
@@ -600,6 +609,8 @@ function classifyAlphaSignals(tx: any, alpha: string, sig?: string): AlphaSignal
         alphaPostBalance: g.postAmount,
         blockTimeMs,
         signalAgeSec,
+        source: 'rpc' as const,
+        txHash: sig,
       };
     });
   } catch (err: any) {
@@ -1702,6 +1713,24 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
       if (DEBUG_TX) dbg(`ignored mint ${mint.slice(0, 8)}: already seen`);
       continue;
     }
+
+    // Birdeye validation: cross-check RPC BUY signal with Birdeye
+    if (signal.source === 'rpc' && signal.txHash) {
+      const blockTimeSec = Math.floor(signal.blockTimeMs / 1000);
+      const validation = await validateBuyWithBirdeye(signer, mint, signal.txHash, blockTimeSec);
+      
+      if (!validation.confirmed) {
+        dbg(
+          `[BIRDEYE] RPC BUY signal for ${short(mint)} NOT confirmed by Birdeye - skipping`
+        );
+        continue; // Skip this signal if Birdeye doesn't confirm it
+      } else if (validation.trade) {
+        dbg(
+          `[BIRDEYE] RPC BUY signal confirmed by Birdeye | ${short(mint)} | Birdeye SOL: ${validation.trade.amountSol.toFixed(4)} | RPC SOL: ${signal.solSpent.toFixed(4)}`
+        );
+      }
+    }
+
     seenMints.add(mint);
 
     if (label === 'candidate') {
@@ -2666,6 +2695,14 @@ async function main() {
     scanRecentAlphaTransactions().catch((err) => {
       console.error('[STARTUP] Scan failed:', err);
     });
+    
+    // Birdeye backfill: catch any missed trades from Birdeye
+    if (process.env.BIRDEYE_API_KEY) {
+      console.log('🔍 Birdeye backfill: checking for missed alpha trades...');
+      birdeyeStartupBackfill().catch((err) => {
+        console.error('[STARTUP] Birdeye backfill failed:', err);
+      });
+    }
   }
   
   // Restart exit managers for all loaded positions
@@ -2719,6 +2756,124 @@ async function scanRecentAlphaTransactions() {
   }
 
   console.log('✅ Startup scan complete');
+}
+
+/**
+ * Birdeye startup backfill: Fetch missed alpha trades from Birdeye
+ * This catches trades that RPC might have missed during downtime
+ */
+async function birdeyeStartupBackfill() {
+  if (!process.env.BIRDEYE_API_KEY) {
+    return;
+  }
+
+  const BACKFILL_WINDOW_SEC = 5 * 60; // Last 5 minutes
+  const now = Math.floor(Date.now() / 1000);
+  const since = now - BACKFILL_WINDOW_SEC;
+
+  for (const alpha of ACTIVE_ALPHAS) {
+    try {
+      console.log(`[BIRDEYE] Fetching trades for ${short(alpha)} since ${new Date(since * 1000).toISOString()}...`);
+      const trades = await fetchWalletTradesSince(alpha, since);
+
+      if (trades.length === 0) {
+        dbg(`[BIRDEYE] No trades found for ${short(alpha)} in last 5 minutes`);
+        continue;
+      }
+
+      console.log(`[BIRDEYE] Found ${trades.length} trade(s) for ${short(alpha)}`);
+
+      // Process BUY trades only
+      for (const trade of trades) {
+        if (trade.side !== 'buy') {
+          dbg(`[BIRDEYE] Skipping ${trade.side} trade for ${short(trade.mint)}`);
+          continue;
+        }
+
+        const mint = trade.mint;
+        
+        // Skip if already seen
+        if (seenMints.has(mint)) {
+          dbg(`[BIRDEYE] Mint ${short(mint)} already seen, skipping`);
+          continue;
+        }
+
+        // Skip if transaction already processed
+        if (seenSignatures.has(trade.txHash)) {
+          dbg(`[BIRDEYE] TX ${trade.txHash.slice(0, 8)} already processed, skipping`);
+          continue;
+        }
+
+        // Convert Birdeye trade to AlphaSignal format
+        const solSpent = trade.amountSol || 0;
+        const tokenDelta = trade.amountToken || 0;
+        
+        // Validate trade meets minimum thresholds
+        if (solSpent < DUST_SOL_SPENT) {
+          dbg(`[BIRDEYE] Trade SOL spent ${solSpent.toFixed(6)} < dust ${DUST_SOL_SPENT}, skipping`);
+          continue;
+        }
+
+        if (tokenDelta < MIN_ALPHA_TOKEN_BALANCE) {
+          dbg(`[BIRDEYE] Trade token amount ${tokenDelta.toFixed(6)} < min ${MIN_ALPHA_TOKEN_BALANCE}, skipping`);
+          continue;
+        }
+
+        const alphaEntryPrice = tokenDelta > 0 ? solSpent / tokenDelta : 0;
+        if (!isValidPrice(alphaEntryPrice)) {
+          dbg(`[BIRDEYE] Invalid entry price ${alphaEntryPrice} for ${short(mint)}, skipping`);
+          continue;
+        }
+
+        const blockTimeMs = trade.timestamp * 1000;
+        const signalAgeSec = Math.max(0, (Date.now() - blockTimeMs) / 1000);
+
+        // Check time window guard
+        if (signalAgeSec > MAX_SIGNAL_AGE_SEC) {
+          dbg(
+            `[BIRDEYE] Trade age ${signalAgeSec.toFixed(1)}s > max ${MAX_SIGNAL_AGE_SEC}s, skipping`
+          );
+          continue;
+        }
+
+        const signal: AlphaSignal = {
+          mint,
+          solSpent,
+          tokenDelta,
+          alphaEntryPrice,
+          alphaPreBalance: 0, // Birdeye doesn't provide this
+          alphaPostBalance: tokenDelta,
+          blockTimeMs,
+          signalAgeSec,
+          source: 'birdeye',
+          txHash: trade.txHash,
+        };
+
+        dbg(
+          `[BIRDEYE] BUY signal | source=birdeye | Alpha: ${short(alpha)} | Mint: ${short(
+            mint
+          )} | solSpent=${solSpent.toFixed(4)} | tokens=${tokenDelta.toFixed(2)} | entryPrice=${alphaEntryPrice.toExponential(3)}`
+        );
+
+        seenMints.add(mint);
+        seenSignatures.add(trade.txHash);
+
+        // Execute copy trade
+        await executeCopyTradeFromSignal({
+          signal,
+          alpha,
+          txSig: trade.txHash,
+          source: 'alpha',
+          notifyTouch: true,
+          skipTimeGuard: true, // Already checked above
+        });
+      }
+    } catch (err: any) {
+      console.error(`[BIRDEYE] Backfill failed for ${short(alpha)}: ${err.message || err}`);
+    }
+  }
+
+  console.log('✅ Birdeye backfill complete');
 }
 
 main().catch((err) => {
