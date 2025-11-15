@@ -64,6 +64,16 @@ export async function fetchWalletTradesSince(
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        const errorText = await response.text().catch(() => '');
+        console.warn(`[BIRDEYE] 401 Unauthorized - API key authentication failed`);
+        console.warn(`[BIRDEYE] Possible causes:`);
+        console.warn(`[BIRDEYE]   1. API key not active or invalid`);
+        console.warn(`[BIRDEYE]   2. IP whitelisting enabled - add VM IP to whitelist in Birdeye dashboard`);
+        console.warn(`[BIRDEYE]   3. API key permissions insufficient`);
+        console.warn(`[BIRDEYE] Error details: ${errorText.slice(0, 200)}`);
+        return [];
+      }
       if (response.status === 429) {
         console.warn('[BIRDEYE] Rate limit hit, skipping wallet trades fetch');
         return [];
@@ -154,8 +164,8 @@ export async function fetchTokenSnapshot(mint: string): Promise<BirdeyeTokenSnap
     });
 
     if (!response.ok) {
-      if (response.status === 429) {
-        console.warn(`[BIRDEYE] Rate limit hit for token ${mint.slice(0, 8)}`);
+      if (response.status === 401) {
+        console.warn(`[BIRDEYE] 401 Unauthorized for token ${mint.slice(0, 8)} - check API key and IP whitelist`);
         return {
           price: null,
           priceUsd: null,
