@@ -2407,15 +2407,16 @@ async function manageExit(mintStr: string) {
       }
     }
     
-    // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
-    const priceRatio = Math.max(price / pos.entryPrice, pos.entryPrice / price);
+    // Note: Price ratio check was already done above for milestone calculations
+    // This check is for crashed token detection (different threshold)
+    const priceRatioForCrash = Math.max(price / pos.entryPrice, pos.entryPrice / price);
     const priceDropFromEntryPct = ((pos.entryPrice - price) / pos.entryPrice) * 100;
     
-    if (priceRatio > 10) {
+    if (priceRatioForCrash > 10) {
       // If price is extremely unreliable (>15x difference), likely token crashed - force exit
       // Also check if price dropped >90% (clear crash indicator)
-      if (priceRatio > 15 || (priceRatio > 10 && priceDropFromEntryPct > 90)) {
-        dbg(`[EXIT] Price extremely unreliable (${priceRatio.toFixed(1)}x) for ${short(mintStr)} - likely crashed, forcing exit`);
+      if (priceRatioForCrash > 15 || (priceRatioForCrash > 10 && priceDropFromEntryPct > 90)) {
+        dbg(`[EXIT] Price extremely unreliable (${priceRatioForCrash.toFixed(1)}x) for ${short(mintStr)} - likely crashed, forcing exit`);
         try {
           const tx = await swapTokenForSOL(pos.mint, pos.qty);
           const solUsd = await getSolUsd();
@@ -2516,8 +2517,23 @@ async function manageExit(mintStr: string) {
 
     if (price > pos.highPrice) pos.highPrice = price;
     
+    // Sanity check: Don't use unreliable prices for gain calculations
+    const priceRatio = Math.max(price / pos.entryPrice, pos.entryPrice / price);
+    if (priceRatio > 10) {
+      // Price is unreliable - skip milestone and profit calculations
+      dbg(`[EXIT] Skipping milestone/profit calculations for ${short(mintStr)}: price unreliable (ratio: ${priceRatio.toFixed(1)}x)`);
+      continue;
+    }
+    
     // Hard profit target: Exit at +200% to secure profits (user requested)
     const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+    
+    // Sanity check: Gain percentage should be reasonable (between -99% and +10000%)
+    if (!Number.isFinite(gainPct) || gainPct < -99 || gainPct > 10000) {
+      dbg(`[EXIT] Skipping milestone/profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct})`);
+      continue;
+    }
+    
     if (gainPct >= 200) {
       dbg(`[EXIT] Hard profit target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
       try {
@@ -2575,7 +2591,18 @@ async function manageExit(mintStr: string) {
       const solUsd = await getSolUsd();
       const priceUsd = price * (solUsd || 0);
       const entryUsd = pos.costSol * (solUsd || 0);
-      const unrealizedUsd = (price - pos.entryPrice) * pos.costSol * (solUsd || 0);
+      
+      // Calculate unrealized PnL correctly: (current price - entry price) * token quantity
+      const tokensHeld = Number(pos.qty);
+      const unrealizedSol = (price - pos.entryPrice) * tokensHeld;
+      const unrealizedUsd = unrealizedSol * (solUsd || 0);
+      
+      // Sanity check: Unrealized should be reasonable
+      if (!Number.isFinite(unrealizedUsd) || Math.abs(unrealizedUsd) > entryUsd * 100) {
+        dbg(`[EXIT] Skipping milestone alert for ${short(mintStr)}: invalid unrealizedUsd (${unrealizedUsd})`);
+        continue;
+      }
+      
       const tag = IS_PAPER ? '[PAPER] ' : '';
       
       // Get token name for display
