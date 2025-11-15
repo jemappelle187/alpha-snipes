@@ -2016,6 +2016,9 @@ async function executeCopyTradeFromSignal(opts: {
     const actualEntryPrice = tokensReceived > 0 ? buySol / tokensReceived : start;
     const finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : start;
     
+    // Store entry liquidity for monitoring
+    const entryLiquidity = liquidityUsd;
+    
     openPositions[mintStr] = {
         mint: mintPk,
         qty,
@@ -2024,6 +2027,7 @@ async function executeCopyTradeFromSignal(opts: {
         highPrice: finalEntryPrice,
         entryTime,
       alpha,
+      entryLiquidityUsd: entryLiquidity, // Store for liquidity drop detection
       };
     persistPositions();
 
@@ -2335,6 +2339,60 @@ async function manageExit(mintStr: string) {
     
     consecutivePriceFailures = 0; // Reset on successful price fetch
     lastPrice = price; // Update for next iteration's dynamic polling
+    
+    // Liquidity drop detection: Exit if liquidity drops >50% from entry (early warning of potential rug)
+    if (pos.entryLiquidityUsd && pos.entryLiquidityUsd > 0) {
+      const currentLiquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 10_000 }).catch(() => null);
+      if (currentLiquidity?.ok && currentLiquidity.liquidityUsd !== null) {
+        const liquidityDropPct = ((pos.entryLiquidityUsd - currentLiquidity.liquidityUsd) / pos.entryLiquidityUsd) * 100;
+        if (liquidityDropPct > 50) {
+          dbg(`[EXIT] Liquidity drop detected for ${short(mintStr)}: ${liquidityDropPct.toFixed(1)}% drop (${formatUsd(pos.entryLiquidityUsd)} → ${formatUsd(currentLiquidity.liquidityUsd)})`);
+          try {
+            const tx = await swapTokenForSOL(pos.mint, pos.qty);
+            const solUsd = await getSolUsd();
+            const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+            const entryUsd = pos.costSol * (solUsd || 0);
+            const exitUsd = exitSol * (solUsd || 0);
+            const pnlUsd = exitUsd - entryUsd;
+            const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : -100;
+            
+            const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+            const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+            const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+            
+            await tgQueue.enqueue(() => bot.sendMessage(
+              TELEGRAM_CHAT_ID,
+              `⚠️ Liquidity drop exit: <b>${tokenDisplay}</b>\n` +
+              `Liquidity dropped ${liquidityDropPct.toFixed(1)}% (${formatUsd(pos.entryLiquidityUsd)} → ${formatUsd(currentLiquidity.liquidityUsd)})\n` +
+              `Exiting to prevent potential rug.`,
+              linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
+            ), { chatId: TELEGRAM_CHAT_ID });
+            
+            recordTrade({
+              t: Date.now(),
+              kind: 'sell',
+              mode: IS_PAPER ? 'paper' : 'live',
+              mint: mintStr,
+              alpha: pos.alpha,
+              exitPriceSol: price,
+              exitUsd,
+              pnlSol: exitSol - pos.costSol,
+              pnlUsd,
+              pnlPct,
+              durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+              tx: tx.txid,
+            });
+            
+            delete openPositions[mintStr];
+            savePositions(serializeLivePositions(openPositions));
+            return;
+          } catch (err: any) {
+            dbg(`[EXIT] Failed to exit on liquidity drop for ${short(mintStr)}: ${err.message || err}`);
+            // Continue to other exit checks
+          }
+        }
+      }
+    }
     
     // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
     const priceRatio = Math.max(price / pos.entryPrice, pos.entryPrice / price);
