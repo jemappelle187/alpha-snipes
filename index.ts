@@ -2325,11 +2325,59 @@ async function manageExit(mintStr: string) {
     lastPrice = price; // Update for next iteration's dynamic polling
     
     // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
-    // Don't use it for max loss protection - wait for next price check
     const priceRatio = Math.max(price / pos.entryPrice, pos.entryPrice / price);
     if (priceRatio > 10) {
-      dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${pos.entryPrice.toExponential(3)}, current: ${price.toExponential(3)})`);
-      continue; // Skip this iteration, wait for next price check
+      // If price is extremely unreliable (>100x difference), likely token crashed - force exit
+      if (priceRatio > 100) {
+        dbg(`[EXIT] Price extremely unreliable (${priceRatio.toFixed(1)}x) for ${short(mintStr)} - likely crashed, forcing exit`);
+        try {
+          const tx = await swapTokenForSOL(pos.mint, pos.qty);
+          const solUsd = await getSolUsd();
+          const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+          const entryUsd = pos.costSol * (solUsd || 0);
+          const exitUsd = exitSol * (solUsd || 0);
+          const pnlUsd = exitUsd - entryUsd;
+          const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : -100;
+          
+          // Get token name for display
+          const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+          const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+          const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+          
+          await tgQueue.enqueue(() => bot.sendMessage(
+            TELEGRAM_CHAT_ID,
+            `💀 Crashed token auto-exit: <b>${tokenDisplay}</b>\n` +
+            `Price unreliable (${priceRatio.toFixed(0)}x off) - likely crashed. Forcing exit.`,
+            linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
+          ), { chatId: TELEGRAM_CHAT_ID });
+          
+          recordTrade({
+            t: Date.now(),
+            kind: 'sell',
+            mode: IS_PAPER ? 'paper' : 'live',
+            mint: mintStr,
+            alpha: pos.alpha,
+            exitPriceSol: price, // Use the unreliable price as estimate
+            exitUsd,
+            pnlSol: exitSol - pos.costSol,
+            pnlUsd,
+            pnlPct,
+            durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+            tx: tx.txid,
+          });
+          
+          delete openPositions[mintStr];
+          savePositions(serializeLivePositions(openPositions));
+          return;
+        } catch (err: any) {
+          dbg(`[EXIT] Failed to exit crashed token ${short(mintStr)}: ${err.message || err}`);
+          // Continue to next iteration - will retry
+        }
+      } else {
+        // Price is unreliable but not extreme - skip max loss check but continue monitoring
+        dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${pos.entryPrice.toExponential(3)}, current: ${price.toExponential(3)})`);
+        continue; // Skip this iteration, wait for next price check
+      }
     }
     
     // Max loss protection: force exit if down >20% from entry
