@@ -1823,6 +1823,7 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
       return;
     }
 
+    dbg(`[HANDLE] Calling executeCopyTradeFromSignal for ${short(mint)} | Alpha: ${short(signer)} | TX: ${sig.slice(0, 8)}...`);
     await executeCopyTradeFromSignal({
       signal,
       alpha: signer,
@@ -1855,6 +1856,7 @@ async function executeCopyTradeFromSignal(opts: {
       const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
       const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
       
+      dbg(`[NOTIFY] Sending "Alpha touched" message for ${short(mintStr)} | Alpha: ${short(alpha)}`);
       await tgQueue.enqueue(
         () =>
           bot.sendMessage(
@@ -1864,6 +1866,7 @@ async function executeCopyTradeFromSignal(opts: {
           ),
         { chatId: TELEGRAM_CHAT_ID }
       );
+      dbg(`[NOTIFY] "Alpha touched" message queued for ${short(mintStr)}`);
       pushEvent({ t: Date.now(), kind: 'touch', mint: mintStr, alpha, tx: txSig });
     }
 
