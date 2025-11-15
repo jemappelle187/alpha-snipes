@@ -2469,8 +2469,18 @@ async function manageExit(mintStr: string) {
           savePositions(serializeLivePositions(openPositions));
           return;
         } catch (err: any) {
-          dbg(`[EXIT] Failed to exit crashed token ${short(mintStr)}: ${err.message || err}`);
-          // Continue to next iteration - will retry
+          const errMsg = err?.message || String(err);
+          const isRateLimited = errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('cooldown');
+          
+          if (isRateLimited) {
+            dbg(`[EXIT] Crashed token exit rate limited for ${short(mintStr)} - will retry after cooldown`);
+            // Wait 60 seconds before retry
+            await new Promise(resolve => setTimeout(resolve, 60_000));
+            continue;
+          } else {
+            dbg(`[EXIT] Failed to exit crashed token ${short(mintStr)}: ${errMsg}`);
+            // Continue to next iteration - will retry
+          }
         }
       } else {
         // Price is unreliable but not extreme - skip max loss check but continue monitoring
@@ -2523,7 +2533,34 @@ async function manageExit(mintStr: string) {
         savePositions(serializeLivePositions(openPositions));
         return;
       } catch (err: any) {
-        await alert(`❌ Max loss exit failed for ${short(mintStr)}: ${err.message || err}`);
+        const errMsg = err?.message || String(err);
+        const isRateLimited = errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('cooldown');
+        
+        if (isRateLimited) {
+          // Rate limited - wait longer before retry, but don't spam alerts
+          dbg(`[EXIT] Max loss exit rate limited for ${short(mintStr)} - will retry after cooldown`);
+          // Don't send alert for rate limits - they're temporary
+          // Wait 60 seconds before next attempt (cooldown period)
+          await new Promise(resolve => setTimeout(resolve, 60_000));
+          continue; // Retry on next iteration
+        } else {
+          // Other error - alert once, then remove position to prevent spam
+          const maxLossAttempts = (pos as any).maxLossAttempts || 0;
+          if (maxLossAttempts < 2) {
+            (pos as any).maxLossAttempts = maxLossAttempts + 1;
+            await alert(`❌ Max loss exit failed for ${short(mintStr)}: ${errMsg}`);
+            // Wait 30 seconds before retry
+            await new Promise(resolve => setTimeout(resolve, 30_000));
+            continue;
+          } else {
+            // Too many failures - remove position without swap to prevent spam
+            dbg(`[EXIT] Max loss exit failed ${maxLossAttempts + 1} times for ${short(mintStr)} - removing position to prevent spam`);
+            await alert(`⚠️ Max loss exit failed repeatedly for ${short(mintStr)}. Removing position to prevent spam.`);
+            delete openPositions[mintStr];
+            savePositions(serializeLivePositions(openPositions));
+            return;
+          }
+        }
       }
     }
 
