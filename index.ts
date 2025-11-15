@@ -1893,6 +1893,7 @@ async function executeCopyTradeFromSignal(opts: {
       );
       dbg(`[NOTIFY] "Alpha touched" message queued for ${short(mintStr)}`);
       pushEvent({ t: Date.now(), kind: 'touch', mint: mintStr, alpha, tx: txSig });
+      recordAlphaSignal(); // Record for health monitoring
     }
 
     if (!skipTimeGuard && MAX_SIGNAL_AGE_SEC > 0) {
@@ -2271,9 +2272,12 @@ async function manageExit(mintStr: string) {
     await new Promise((r) => setTimeout(r, pollInterval));
     const price = await getQuotePrice(pos.mint);
     
-    // Dead token detection: if price unavailable for too long, force exit
+    // Record price fetch result for health monitoring
     if (!price || !isValidPrice(price)) {
+      recordPriceFailure();
       consecutivePriceFailures++;
+    } else {
+      recordPriceSuccess();
       if (consecutivePriceFailures >= MAX_PRICE_FAILURES) {
         // Check if error is due to rate limiting - if so, just remove position without trying to swap
         const isRateLimited = typeof price === 'undefined' || 
@@ -2926,6 +2930,31 @@ setInterval(async () => {
     SILENT_ALERT_SENT = false;
   }
 }, 60_000); // Check every minute
+
+// Self-healing health check system
+// Checks bot health every 2 minutes and auto-fixes issues
+setInterval(async () => {
+  try {
+    const { active } = listAll();
+    const health = await performHealthCheck(bot, connection, TELEGRAM_CHAT_ID, active.map(a => a.address));
+    
+    // If any component is down or degraded, attempt auto-fix
+    if (health.telegram !== 'healthy' || health.rpc !== 'healthy' || health.priceFetch !== 'healthy') {
+      console.warn('[HEALTH] Issues detected:', health.issues);
+      const fixes = await attemptAutoFix(bot, connection, TELEGRAM_CHAT_ID);
+      if (fixes.length > 0) {
+        console.log('[HEALTH] Auto-fix attempts:', fixes);
+        // Re-check health after fixes
+        const recheck = await performHealthCheck(bot, connection, TELEGRAM_CHAT_ID, active.map(a => a.address));
+        if (recheck.issues.length < health.issues.length) {
+          await alert(`🔧 <b>Auto-fix applied</b>\n${fixes.join('\n')}\n\nHealth status:\n• Telegram: ${recheck.telegram}\n• RPC: ${recheck.rpc}\n• Price fetch: ${recheck.priceFetch}\n• Alpha monitoring: ${recheck.alphaMonitoring}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[HEALTH] Health check failed:', err);
+  }
+}, 2 * 60_000); // Check every 2 minutes
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Daily Recap (Midnight Summary)
