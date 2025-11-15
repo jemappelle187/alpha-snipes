@@ -106,7 +106,7 @@ const SENTRY_MAX_DD = parseFloat(process.env.SENTRY_MAX_DRAWDOWN_PCT || '0.22');
 const DUST_SOL_SPENT = parseFloat(process.env.DUST_SOL_SPENT || '0.001');
 const MIN_ALPHA_TOKEN_BALANCE = parseFloat(process.env.MIN_ALPHA_TOKEN_BALANCE || '0.000001');
 const MIN_SIZE_INCREASE_RATIO = parseFloat(process.env.MIN_SIZE_INCREASE_RATIO || '0.25');
-const MAX_SIGNAL_AGE_SEC = parseInt(process.env.MAX_SIGNAL_AGE_SEC || '60', 10);
+const MAX_SIGNAL_AGE_SEC = parseInt(process.env.MAX_SIGNAL_AGE_SEC || '180', 10); // 3 minutes default
 const MAX_ALPHA_ENTRY_MULTIPLIER = parseFloat(process.env.MAX_ALPHA_ENTRY_MULTIPLIER || '2');
 const MIN_LIQUIDITY_USD = parseFloat(process.env.MIN_LIQUIDITY_USD || '10000');
 const ENABLE_WATCHLIST = (process.env.ENABLE_WATCHLIST || 'true') === 'true';
