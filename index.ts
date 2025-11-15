@@ -2127,11 +2127,30 @@ async function monitorWatchlist() {
           }
         }
 
+        // Fetch current price for entry price display (fallback if alphaEntryPrice not available)
+        let entryPrice = entry.alphaEntryPrice ?? 0;
+        let entryPriceDisplay = 'N/A';
+        if (entryPrice > 0 && isValidPrice(entryPrice)) {
+          entryPriceDisplay = formatSol(entryPrice);
+        } else {
+          // Try to fetch current price as fallback
+          try {
+            const mintPk = new PublicKey(entry.mint);
+            const currentPrice = await getQuotePrice(mintPk);
+            if (currentPrice && isValidPrice(currentPrice)) {
+              entryPrice = currentPrice;
+              entryPriceDisplay = formatSol(currentPrice);
+            }
+          } catch (err) {
+            dbg(`[WATCHLIST] Could not fetch price for ${short(entry.mint)}: ${err}`);
+          }
+        }
+
         const signalSnapshot: AlphaSignal = {
           mint: entry.mint,
           solSpent: entry.solSpent ?? BUY_SOL,
           tokenDelta: entry.tokenDelta ?? 0,
-          alphaEntryPrice: entry.alphaEntryPrice ?? 0,
+          alphaEntryPrice: entryPrice,
           alphaPreBalance: 0,
           alphaPostBalance: entry.tokenDelta ?? 0,
           blockTimeMs: entry.addedAt,
@@ -2141,6 +2160,7 @@ async function monitorWatchlist() {
         await alert(
           `👀 <b>Watchlist ready</b>\n` +
             `Mint: <code>${short(entry.mint)}</code>\n` +
+            `Entry Price: ${entryPriceDisplay}\n` +
             `Liquidity: ${formatUsd(liquidityUsd)}\n` +
             `24h Volume: ${formatUsd(volume24h)}\n` +
             `Auto-buying now...`
