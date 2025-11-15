@@ -12,6 +12,8 @@ type DexPair = {
   volume?: { h24?: number; m5?: number };
   volume24h?: number;
   pairCreatedAt?: number;
+  priceUsd?: string | number;
+  priceNative?: string | number; // Price in SOL
   baseToken?: { name?: string; symbol?: string; address?: string };
   quoteToken?: { name?: string; symbol?: string; address?: string };
 };
@@ -25,6 +27,7 @@ export type LiquiditySnapshot = {
   pairAddress?: string;
   tokenName?: string | null; // Token name from DexScreener
   tokenSymbol?: string | null; // Token symbol from DexScreener
+  priceSol?: number | null; // Price in SOL from DexScreener
   error?: string;
 };
 
@@ -121,6 +124,15 @@ export async function getLiquidityResilient(
       const volume24h = Number(best.volume24h ?? best.volume?.h24 ?? 0) || 0;
       const pairCreatedAt = best.pairCreatedAt ? Number(best.pairCreatedAt) : null;
       
+      // Extract price in SOL (priceNative is usually in SOL for Solana)
+      let priceSol: number | null = null;
+      if (best.priceNative) {
+        const price = Number(best.priceNative);
+        if (Number.isFinite(price) && price > 0) {
+          priceSol = price;
+        }
+      }
+      
       // Extract token name and symbol (baseToken is usually the token we're looking for)
       let tokenName: string | null = null;
       let tokenSymbol: string | null = null;
@@ -134,7 +146,7 @@ export async function getLiquidityResilient(
       
       toCache(mint, liquidityUsd);
       const shortMint = mint.slice(0, 8) + '...';
-      console.log(`[LIQ] DexScreener: $${liquidityUsd.toFixed(0)} liquidity, $${volume24h.toFixed(0)} 24h volume for ${shortMint}`);
+      console.log(`[LIQ] DexScreener: $${liquidityUsd.toFixed(0)} liquidity, $${volume24h.toFixed(0)} 24h volume${priceSol ? `, ${priceSol.toExponential(3)} SOL/token` : ''} for ${shortMint}`);
       return {
         ok: true,
         source: 'dexscreener',
@@ -144,6 +156,7 @@ export async function getLiquidityResilient(
         pairAddress: best.pairAddress,
         tokenName,
         tokenSymbol,
+        priceSol,
       };
     } catch (err: any) {
       lastError = err;
@@ -168,6 +181,7 @@ export async function getLiquidityResilient(
     pairCreatedAt: null,
     tokenName: null,
     tokenSymbol: null,
+    priceSol: null,
     error: lastError ? String(lastError.message || lastError) : 'unknown',
   };
 }

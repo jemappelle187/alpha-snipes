@@ -1506,11 +1506,23 @@ async function swapTokenForSOL(
 async function getQuotePrice(mint: PublicKey): Promise<number | null> {
     const SOL = 'So11111111111111111111111111111111111111112';
   const shortMint = short(mint.toBase58());
+  const mintStr = mint.toBase58();
+  
+  // PRIMARY: Try DexScreener API (fast, reliable, no rate limits with caching)
+  try {
+    const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 10_000 });
+    if (liquidity.ok && liquidity.priceSol && liquidity.priceSol > 0) {
+      dbg(`[PRICE] DexScreener price for ${shortMint}: ${liquidity.priceSol.toExponential(3)} SOL/token`);
+      return liquidity.priceSol;
+    }
+  } catch (err) {
+    dbg(`[PRICE] DexScreener price fetch failed for ${shortMint}: ${err}`);
+  }
   
   try {
-    // PRIMARY: Try SELL quote (1M tokens → SOL) - most accurate for price
+    // FALLBACK: Try SELL quote (1M tokens → SOL) - most accurate for price
     dbg(`[PRICE] Fetching SELL quote for ${shortMint} (1M tokens → SOL)`);
-    const sellQuote = await getJupiterQuote(mint.toBase58(), SOL, 1_000_000, 1000);
+    const sellQuote = await getJupiterQuote(mintStr, SOL, 1_000_000, 1000);
     if (sellQuote && sellQuote.outAmount) {
       const solOut = Number(sellQuote.outAmount) / 1e9;
       if (solOut > 0) {
@@ -1524,7 +1536,7 @@ async function getQuotePrice(mint: PublicKey): Promise<number | null> {
     const errorMsg = e?.message || String(e);
     dbg(`[PRICE] SELL quote failed for ${shortMint}: ${errorMsg}`);
     
-    // FALLBACK: Try BUY quote (0.1 SOL → tokens) - works for new tokens in bonding curve
+    // LAST RESORT: Try BUY quote (0.1 SOL → tokens) - works for new tokens in bonding curve
     try {
       dbg(`[PRICE] Attempting BUY quote fallback for ${shortMint} (0.1 SOL → tokens)`);
       const buyQuote = await getJupiterQuote(SOL, mint.toBase58(), 0.1 * 1e9, 1000);
@@ -2228,7 +2240,7 @@ async function manageExit(mintStr: string) {
 
   let consecutivePriceFailures = 0;
   const MAX_PRICE_FAILURES = 12; // ~60s at 5s intervals
-  const MAX_LOSS_PCT = -20; // Force exit at -20% loss
+  const MAX_LOSS_PCT = -10; // Force exit at -10% loss (tighter protection)
 
   let lastPrice = pos.entryPrice;
 
