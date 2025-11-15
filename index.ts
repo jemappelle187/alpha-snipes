@@ -2327,8 +2327,9 @@ async function manageExit(mintStr: string) {
     // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
     const priceRatio = Math.max(price / pos.entryPrice, pos.entryPrice / price);
     if (priceRatio > 10) {
-      // If price is extremely unreliable (>100x difference), likely token crashed - force exit
-      if (priceRatio > 100) {
+      // If price is extremely unreliable (>15x difference), likely token crashed - force exit
+      // Lowered from 100x to 15x to catch more crashed tokens
+      if (priceRatio > 15) {
         dbg(`[EXIT] Price extremely unreliable (${priceRatio.toFixed(1)}x) for ${short(mintStr)} - likely crashed, forcing exit`);
         try {
           const tx = await swapTokenForSOL(pos.mint, pos.qty);
