@@ -319,6 +319,7 @@ let openPositions: Record<
     entryTime: number;
     alpha?: string;
     phase?: 'early' | 'trailing';
+    entryLiquidityUsd?: number; // Track liquidity at entry for monitoring
   }
 > = hydratePositions(loadPositions());
 
