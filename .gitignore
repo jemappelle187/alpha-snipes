@@ -9,6 +9,11 @@ build/
 # PM2 logs
 logs/
 
+# Runtime data files (created by bot, should not be in Git)
+data/watchlist.json
+data/positions.json
+data/trades.jsonl
+
 # Alpha registry (keep in git for backup, but can be excluded if contains sensitive data)
 # alpha/registry.json
 
