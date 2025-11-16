@@ -34,20 +34,11 @@ const MAX_ALPHA_SILENCE_MS = 10 * 60 * 1000; // 10 minutes
 
 export async function checkTelegramHealth(bot: TelegramBot, chatId: number): Promise<boolean> {
   try {
-    // Try to get bot info (lightweight check)
+    // Try to get bot info (lightweight check - doesn't send messages)
     await bot.getMe();
     
-    // Try to send a test message (more thorough)
-    try {
-      await bot.sendMessage(chatId, '💓 Health check', { disable_notification: true });
-    } catch (err: any) {
-      // If chat doesn't exist or bot was removed, that's a real issue
-      if (err.response?.statusCode === 400 || err.response?.statusCode === 403) {
-        consecutiveTelegramFailures++;
-        return false;
-      }
-      // Other errors might be temporary
-    }
+    // Don't send test messages - just check if bot is accessible
+    // Test messages were causing spam (2,731 messages!)
     
     consecutiveTelegramFailures = 0;
     return true;

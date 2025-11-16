@@ -2977,15 +2977,15 @@ setInterval(async () => {
 }, 60_000); // Check every minute
 
 // Self-healing health check system
-// Checks bot health every 2 minutes and auto-fixes issues
+// Checks bot health every 5 minutes and auto-fixes issues (silent - no messages unless issues found)
 setInterval(async () => {
   try {
     const { active } = listAll();
     const health = await performHealthCheck(bot, connection, TELEGRAM_CHAT_ID, active.map(a => a.address));
     
-    // If any component is down or degraded, attempt auto-fix
-    if (health.telegram !== 'healthy' || health.rpc !== 'healthy' || health.priceFetch !== 'healthy') {
-      console.warn('[HEALTH] Issues detected:', health.issues);
+    // Only alert if there are actual issues (not just degraded)
+    if (health.telegram === 'down' || health.rpc === 'down') {
+      console.warn('[HEALTH] Critical issues detected:', health.issues);
       const fixes = await attemptAutoFix(bot, connection, TELEGRAM_CHAT_ID);
       if (fixes.length > 0) {
         console.log('[HEALTH] Auto-fix attempts:', fixes);
@@ -2994,12 +2994,19 @@ setInterval(async () => {
         if (recheck.issues.length < health.issues.length) {
           await alert(`🔧 <b>Auto-fix applied</b>\n${fixes.join('\n')}\n\nHealth status:\n• Telegram: ${recheck.telegram}\n• RPC: ${recheck.rpc}\n• Price fetch: ${recheck.priceFetch}\n• Alpha monitoring: ${recheck.alphaMonitoring}`);
         }
+      } else {
+        // No fixes available - alert about critical issue
+        await alert(`⚠️ <b>Critical health issue</b>\n${health.issues.join('\n')}\n\nBot may not be functioning correctly.`);
       }
+    }
+    // Don't send messages for degraded status - just log it
+    else if (health.telegram !== 'healthy' || health.rpc !== 'healthy' || health.priceFetch !== 'healthy') {
+      console.warn('[HEALTH] Degraded status (silent):', health.issues);
     }
   } catch (err) {
     console.error('[HEALTH] Health check failed:', err);
   }
-}, 2 * 60_000); // Check every 2 minutes
+}, 5 * 60_000); // Check every 5 minutes (reduced from 2 minutes to reduce load)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Daily Recap (Midnight Summary)
