@@ -2468,24 +2468,29 @@ async function monitorWatchlist() {
           continue;
         }
         
-        // Check volume threshold - skip dead tokens with no trading activity
-        if (volume24h < WATCHLIST_MIN_VOLUME_24H_USD) {
-          dbg(
-            `[WATCHLIST] skipping ${short(entry.mint)} | volume24h=$${volume24h.toFixed(0)} | min=$${WATCHLIST_MIN_VOLUME_24H_USD} (insufficient trading activity)`
-          );
-          continue;
-        }
-        
-        // Check if pair is too old and inactive (optional - based on pair creation time)
+        // Check volume threshold - use relative volume for new pairs
+        // For tokens < 6 hours old, scale down the volume requirement proportionally
+        // This prevents rejecting active new tokens that haven't had 24h to accumulate volume
+        let minVolume = WATCHLIST_MIN_VOLUME_24H_USD;
         if (liquidity.pairCreatedAt) {
           const pairAgeHours = (Date.now() - liquidity.pairCreatedAt * 1000) / (1000 * 60 * 60);
-          // If pair is old but has no recent volume, it's likely dead
-          if (pairAgeHours > 24 && volume24h < WATCHLIST_MIN_VOLUME_24H_USD * 2) {
+          if (pairAgeHours < 6) {
+            // Scale down minimum volume for new pairs (e.g., 1 hour old = $1000 * (1/6) = $167)
+            minVolume = WATCHLIST_MIN_VOLUME_24H_USD * Math.max(pairAgeHours / 6, 0.1); // Minimum 10% of threshold
             dbg(
-              `[WATCHLIST] skipping ${short(entry.mint)} | pair age=${pairAgeHours.toFixed(1)}h, volume=$${volume24h.toFixed(0)} (likely dead token)`
+              `[WATCHLIST] New pair detected (${pairAgeHours.toFixed(1)}h old) | scaling volume threshold: $${minVolume.toFixed(0)} (from $${WATCHLIST_MIN_VOLUME_24H_USD})`
             );
-            continue;
+          } else if (pairAgeHours > 24) {
+            // For old pairs (> 24h), require higher volume to avoid dead tokens
+            minVolume = WATCHLIST_MIN_VOLUME_24H_USD * 2;
           }
+        }
+        
+        if (volume24h < minVolume) {
+          dbg(
+            `[WATCHLIST] skipping ${short(entry.mint)} | volume24h=$${volume24h.toFixed(0)} | min=$${minVolume.toFixed(0)} (insufficient trading activity)`
+          );
+          continue;
         }
 
         // Fetch current price for entry price display (fallback if alphaEntryPrice not available)
