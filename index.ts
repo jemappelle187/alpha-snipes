@@ -1617,10 +1617,14 @@ async function handleExitError(
   // DNS/Network errors - treat as temporary, retry with backoff (no alert on first attempts)
   const isNetworkError = errMsg.includes('DNS lookup failed') || 
                          errMsg.includes('host unreachable') || 
+                         errMsg.includes('quote host unreachable') ||
                          errMsg.includes('ENOTFOUND') ||
+                         errMsg.includes('getaddrinfo') ||
                          errMsg.includes('ECONNREFUSED') ||
                          errMsg.includes('ETIMEDOUT') ||
-                         errMsg.includes('network error');
+                         errMsg.includes('network timeout') ||
+                         errMsg.includes('network error') ||
+                         errMsg.includes('quote server could not be resolved');
   if (isNetworkError) {
     const networkAttempts = (pos as any).networkAttempts || 0;
     (pos as any).networkAttempts = networkAttempts + 1;
