@@ -2299,15 +2299,47 @@ async function executeCopyTradeFromSignal(opts: {
       return 'skipped';
       }
       
-    const buy = await swapSOLforToken(mintPk, buySol);
-      const entryTime = Date.now();
-    const qty = BigInt(buy.outAmount);
+    // Try to buy - if it fails with no_route, it means Jupiter hasn't indexed the token yet
+    // even though DexScreener shows liquidity
+    let buy;
+    let entryTime;
+    let qty: bigint;
+    let finalEntryPrice: number;
     
-    // Calculate actual entry price from the buy transaction
-    // Entry price = SOL spent / tokens received
-    const tokensReceived = Number(qty);
-    const actualEntryPrice = tokensReceived > 0 ? buySol / tokensReceived : start;
-    const finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : start;
+    try {
+      buy = await swapSOLforToken(mintPk, buySol);
+      entryTime = Date.now();
+      qty = BigInt(buy.outAmount);
+      
+      // Calculate actual entry price from the buy transaction
+      // Entry price = SOL spent / tokens received
+      const tokensReceived = Number(qty);
+      const actualEntryPrice = tokensReceived > 0 ? buySol / tokensReceived : start;
+      finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : start;
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      
+      // If it's a "no route" error, Jupiter hasn't indexed the token yet
+      // even though DexScreener shows liquidity - this is a timing issue
+      if (errMsg.includes('no_route') || errMsg.includes('No route') || errMsg.includes('could not find a swap path')) {
+        await alert(
+          `⛔ Skipping <code>${short(mintStr)}</code>\n` +
+          `due to: <b>no_route_buy</b>: Jupiter could not find a swap path (illiquid or new token)\n\n` +
+          `• No liquidity route available on Jupiter for this token pair.\n` +
+          `• This means Jupiter could not find a valid liquidity route for the trade.\n` +
+          `• The token is likely illiquid right now, or Jupiter hasn't indexed it yet.\n` +
+          `• DexScreener may show liquidity, but Jupiter needs time to index new tokens.`
+        );
+        // Remove from watchlist to prevent repeated attempts
+        if (ENABLE_WATCHLIST) {
+          removeFromWatchlist(mintStr);
+        }
+        return 'skipped';
+      }
+      
+      // Re-throw other errors
+      throw err;
+    }
     
     // Store entry liquidity for monitoring
     const entryLiquidity = liquidityUsd;
@@ -2332,13 +2364,18 @@ async function executeCopyTradeFromSignal(opts: {
     const sizingLine = `Size: ${formatSol(buySol)} (${sizing.multiplier >= 1 ? '▲' : '▼'}×${sizing.multiplier.toFixed(
       2
     )})`;
+    
+    // Use the entry price from signal if available, otherwise use calculated price
+    const displayEntryPrice = isValidPrice(signal.alphaEntryPrice) ? signal.alphaEntryPrice : finalEntryPrice;
+    const displayEntryPriceUsd = displayEntryPrice * (solUsd || 0);
+    
     await tgQueue.enqueue(
       () =>
         bot.sendMessage(
         TELEGRAM_CHAT_ID,
           `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
           `Size: ${formatSol(buySol)}${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
-          `Entry: ${formatSol(finalEntryPrice)} SOL/token${solUsd ? ` (~${formatUsd(refPriceUsd)})` : ''}\n` +
+          `Entry: ${formatSol(displayEntryPrice)} SOL/token${solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''}\n` +
           `${sizingLine}`,
           linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
         ),
