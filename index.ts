@@ -855,7 +855,7 @@ bot.onText(/^\/open$/, async (msg) => {
     const uSol = (currentPrice - pos.entryPrice) * pos.costSol;
     const uUsd = uSol * (solUsd || 0);
     const sign = uPct >= 0 ? '+' : '';
-    const phaseLabel = pos.phase === 'trailing' ? '🎯 TRAILING' : '⏳ EARLY TP';
+    const phaseLabel = '🎯 AUTO-CLOSE @ +50%';
     const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
     
     // Highlight profit/loss with emojis and colors
@@ -2417,9 +2417,8 @@ async function manageExit(mintStr: string) {
     return;
   }
 
-  const earlyTarget = pos.entryPrice * (1 + EARLY_TP_PCT);
-  let phase: 'early' | 'trailing' = 'early';
-  pos.phase = phase; // Track phase in position
+  // Simple exit strategy: auto-close at +50% (no early TP or trailing stop)
+  // Phase tracking removed - we just exit at +50%
 
   let consecutivePriceFailures = 0;
   const MAX_PRICE_FAILURES = 12; // ~60s at 5s intervals
