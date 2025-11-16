@@ -3,27 +3,27 @@
 ## Transaction Details
 - **Alpha Wallet:** `8zkJmeQS1J3GUkPvfboeT76bwojADU6dyTZsCBiMdCVp`
 - **Mint:** `EqgcKbiKnVFf2LcyEAFBx3okfMZUHamabWNvRa14moon` (KITTYCASH)
-- **BUY Transaction Time:** ~15 hours ago
+- **BUY Transaction Time:** ~15-20 minutes ago (based on actual transaction data)
 - **SELL Transaction Time:** ~15-16 minutes ago
-- **BUY Age:** ~54,000 seconds (15 hours)
+- **BUY Age:** ~900-1200 seconds (15-20 minutes)
 - **SELL Age:** ~900 seconds (15 minutes)
 
 ## Root Cause: Signal Too Old
 
 ### The Problem
-The **BUY transaction** happened **~15 hours ago**, which is way beyond any reasonable signal age window:
+The **BUY transaction** happened **~15-20 minutes ago**, which is beyond the signal age window:
 
 1. **Signal Age Guard:** `MAX_SIGNAL_AGE_SEC = 180 seconds (3 minutes)`
-   - The BUY transaction is **54,000 seconds old (15 hours)** → **300x older than allowed**
-   - Bot will skip: `"Signal too old (54000s > 180s)"`
+   - The BUY transaction is **~900-1200 seconds old (15-20 minutes)** → **5-6.7x older than allowed**
+   - Bot will skip: `"Signal too old (900s > 180s)"`
 
 2. **Polling Backup:** Only checks last **30 seconds**
-   - The BUY transaction is **54,000 seconds old** → **1,800x older than polling window**
+   - The BUY transaction is **~900 seconds old** → **30x older than polling window**
    - Polling backup won't catch it
 
 3. **Birdeye Backfill:** Now checks last **10 minutes**
-   - The BUY transaction is **15 hours old** → **90x older than backfill window**
-   - Even with extended backfill, it's too old
+   - The BUY transaction is **15-20 minutes old** → **1.5-2x older than backfill window**
+   - Backfill window needs to be increased to catch this
 
 ### Why This Happened
 
@@ -106,18 +106,19 @@ This way:
 ## Immediate Action
 
 For this specific transaction:
-- The **BUY was 15 hours ago** - way too old to trade now
+- The **BUY was 15-20 minutes ago** - too old for the 3-minute signal age guard
 - The **SELLs were 15-16 minutes ago** - also too old (5x over the 3-minute limit)
 - Price has likely moved significantly since the BUY
 - Alpha already sold their position (4 sells totaling ~$304K)
-- **Not worth entering at this point** - we're way too late
+- **Not worth entering at this point** - we're too late
 
 ### Why This Happened
 
 **Most Likely Scenario:**
-1. Bot wasn't running 15 hours ago when the BUY happened
-2. OR bot was running but had a detection/classification failure
-3. OR alpha wallet wasn't in the active list 15 hours ago
+1. **onLogs() missed it** - RPC subscription failed or was delayed
+2. **Transaction was detected but too old** - When processed, it was already > 3 minutes old
+3. **Polling backup missed it** - Only checks last 30 seconds, transaction was 15+ minutes old
+4. **Birdeye backfill missed it** - Only checks last 10 minutes, transaction was 15-20 minutes old
 
 **The SELLs (15-16 minutes ago):**
 - These are SELL signals, not BUY signals
