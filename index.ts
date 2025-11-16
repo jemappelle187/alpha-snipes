@@ -2459,13 +2459,14 @@ async function monitorWatchlist() {
       try {
         markWatchlistChecked(entry.mint);
         const liquidity = await getLiquidityResilient(entry.mint);
-        const liquidityUsd = liquidity.ok && liquidity.liquidityUsd ? liquidity.liquidityUsd : 0;
+        const liquidityUsd = liquidity.ok && typeof liquidity.liquidityUsd === 'number' ? liquidity.liquidityUsd : 0;
         const volume24h = liquidity.volume24h ?? 0;
         
-        // Check liquidity threshold
-        if (!liquidity.ok || liquidityUsd < WATCHLIST_MIN_LIQUIDITY_USD) {
+        // Check liquidity threshold - skip if unknown (provider error) or below minimum
+        if (!liquidity.ok || typeof liquidity.liquidityUsd !== 'number' || liquidityUsd < WATCHLIST_MIN_LIQUIDITY_USD) {
+          const liqDisplay = typeof liquidity.liquidityUsd === 'number' ? `$${liquidityUsd.toFixed(0)}` : 'unknown';
           dbg(
-            `[WATCHLIST] waiting ${short(entry.mint)} | liquidity=$${liquidityUsd.toFixed(0)} | min=${WATCHLIST_MIN_LIQUIDITY_USD}`
+            `[WATCHLIST] waiting ${short(entry.mint)} | liquidity=${liqDisplay} | min=${WATCHLIST_MIN_LIQUIDITY_USD}`
           );
           continue;
         }
