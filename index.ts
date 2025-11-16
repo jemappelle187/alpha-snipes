@@ -2209,9 +2209,11 @@ async function executeCopyTradeFromSignal(opts: {
     // Use lower threshold for alpha signals, higher for watchlist
     const minLiq = source === 'alpha' ? MIN_LIQUIDITY_USD_ALPHA : MIN_LIQUIDITY_USD;
     
-    if (liq.ok && typeof liq.liquidityUsd === 'number') {
-      // Known liquidity value
-      const liquidityUsd = liq.liquidityUsd;
+    // Extract liquidityUsd - handle both known (number) and unknown (undefined) cases
+    const liquidityUsd: number | undefined = liq.ok && typeof liq.liquidityUsd === 'number' ? liq.liquidityUsd : undefined;
+    
+    if (typeof liquidityUsd === 'number') {
+      // Known liquidity value (including 0 = known low liquidity)
       const liqPass = liquidityUsd >= minLiq;
       dbg(
         `[GUARD] Liquidity | liquidity=$${liquidityUsd.toFixed(0)} | min=$${minLiq} | source=${liq.source ?? 'unknown'} | ${
@@ -2228,7 +2230,7 @@ async function executeCopyTradeFromSignal(opts: {
         }
         return 'skipped';
       }
-      // Pass liquidityUsd to sizing
+      // Known liquidity passed - will use liquidityUsd for sizing
     } else {
       // Provider failed (rate_limit, timeout, network) → fail OPEN, but log loudly and shrink size
       dbg(
@@ -2294,11 +2296,11 @@ async function executeCopyTradeFromSignal(opts: {
       baseBuySol: BUY_SOL,
       minBuySol: MIN_BUY_SOL,
       maxBuySol: MAX_BUY_SOL,
-      liquidityUsd: liq.ok && typeof liq.liquidityUsd === 'number' ? liq.liquidityUsd : 0, // Use 0 if unknown (will apply penalty)
+      liquidityUsd: typeof liquidityUsd === 'number' ? liquidityUsd : 0, // Use 0 if unknown (will apply penalty)
       alphaSolSpent: signal.solSpent,
       signalAgeSec: signal.signalAgeSec ?? 0,
       watchlistRetry: source === 'watchlist',
-      liquidityPenalty: liq.ok && typeof liq.liquidityUsd === 'number' ? undefined : 0.5, // 0.5x size when liquidity unknown
+      liquidityPenalty: typeof liquidityUsd === 'number' ? undefined : 0.5, // 0.5x size when liquidity unknown
     });
     const buySol = sizing.sizeSol;
 
@@ -2350,8 +2352,8 @@ async function executeCopyTradeFromSignal(opts: {
       throw err;
     }
     
-    // Store entry liquidity for monitoring
-    const entryLiquidity = liquidityUsd;
+    // Store entry liquidity for monitoring (use 0 if unknown - we'll skip liquidity drop detection in that case)
+    const entryLiquidity = typeof liquidityUsd === 'number' ? liquidityUsd : 0;
     
     openPositions[mintStr] = {
         mint: mintPk,
@@ -2361,7 +2363,7 @@ async function executeCopyTradeFromSignal(opts: {
         highPrice: finalEntryPrice,
         entryTime,
       alpha,
-      entryLiquidityUsd: entryLiquidity, // Store for liquidity drop detection
+      entryLiquidityUsd: entryLiquidity, // Store for liquidity drop detection (0 = unknown, skip detection)
       };
     persistPositions();
 
