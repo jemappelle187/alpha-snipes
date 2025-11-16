@@ -1554,7 +1554,7 @@ function isDeadTokenError(err: any): boolean {
          errMsg.includes('no liquidity');
 }
 
-// Unified exit error handler - handles dead tokens, rate limits, and other errors
+// Unified exit error handler - handles dead tokens, rate limits, DNS errors, and other errors
 async function handleExitError(
   err: any,
   mintStr: string,
@@ -1591,8 +1591,8 @@ async function handleExitError(
     return 'removed';
   }
   
-  // Rate limit - exponential backoff with max attempts
-  const isRateLimited = errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('cooldown') || errMsg.includes('backoff');
+  // Rate limit - exponential backoff with max attempts (no alert on first attempts)
+  const isRateLimited = errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('cooldown') || errMsg.includes('backoff') || errMsg.includes('cooling down');
   if (isRateLimited) {
     const rateLimitAttempts = (pos as any).rateLimitAttempts || 0;
     (pos as any).rateLimitAttempts = rateLimitAttempts + 1;
@@ -1609,15 +1609,47 @@ async function handleExitError(
     // Exponential backoff: 30s, 60s, 120s, 240s, 480s
     const delay = 30_000 * Math.pow(2, Math.min(rateLimitAttempts, 4));
     dbg(`[EXIT] ${exitType} exit rate limited for ${short(mintStr)} - retrying in ${delay/1000}s (attempt ${rateLimitAttempts + 1}/5)`);
+    // Don't send alert for rate limits - they're temporary, just retry
     await new Promise(resolve => setTimeout(resolve, delay));
     return 'retry';
   }
   
-  // Other errors - track attempts and remove after 3 failures
+  // DNS/Network errors - treat as temporary, retry with backoff (no alert on first attempts)
+  const isNetworkError = errMsg.includes('DNS lookup failed') || 
+                         errMsg.includes('host unreachable') || 
+                         errMsg.includes('ENOTFOUND') ||
+                         errMsg.includes('ECONNREFUSED') ||
+                         errMsg.includes('ETIMEDOUT') ||
+                         errMsg.includes('network error');
+  if (isNetworkError) {
+    const networkAttempts = (pos as any).networkAttempts || 0;
+    (pos as any).networkAttempts = networkAttempts + 1;
+    
+    // After 5 attempts, remove position
+    if (networkAttempts >= 5) {
+      dbg(`[EXIT] ${exitType} exit network error ${networkAttempts} times for ${short(mintStr)} - removing position`);
+      await alert(`⚠️ ${exitType} exit network error repeatedly for ${short(mintStr)}. Removing position.`);
+      delete openPositions[mintStr];
+      savePositions(serializeLivePositions(openPositions));
+      return 'removed';
+    }
+    
+    // Exponential backoff: 15s, 30s, 60s, 120s, 240s (faster than rate limits)
+    const delay = 15_000 * Math.pow(2, Math.min(networkAttempts, 4));
+    dbg(`[EXIT] ${exitType} exit network error for ${short(mintStr)} - retrying in ${delay/1000}s (attempt ${networkAttempts + 1}/5)`);
+    // Don't send alert for network errors - they're temporary, just retry
+    await new Promise(resolve => setTimeout(resolve, delay));
+    return 'retry';
+  }
+  
+  // Other errors - track attempts and remove after 3 failures (alert on first failure)
   const errorAttempts = (pos as any).errorAttempts || 0;
   if (errorAttempts < 2) {
     (pos as any).errorAttempts = errorAttempts + 1;
-    await alert(`❌ ${exitType} exit failed for ${short(mintStr)}: ${errMsg}`);
+    // Only alert on first failure for non-network errors
+    if (errorAttempts === 0) {
+      await alert(`❌ ${exitType} exit failed for ${short(mintStr)}: ${errMsg}`);
+    }
     await new Promise(resolve => setTimeout(resolve, 30_000));
     return 'retry';
   } else {
