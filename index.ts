@@ -833,9 +833,20 @@ bot.onText(/^\/open$/, async (msg) => {
     const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
     const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : `https://dexscreener.com/solana/${mintStr}`;
     
-    const currentPrice = await getQuotePrice(pos.mint).catch(() => null);
+    // Try to get price with timeout
+    const currentPrice = await Promise.race([
+      getQuotePrice(pos.mint),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)) // 5s timeout
+    ]).catch(() => null);
+    
     if (!currentPrice || !isValidPrice(currentPrice)) {
-      lines.push(`<a href="${chartUrl}">${tokenDisplay}</a>  [fetching...]`);
+      // Show position info even if price fetch fails
+      const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
+      lines.push(
+        `⚠️ <a href="${chartUrl}">${tokenDisplay}</a>  [price unavailable]\n` +
+        `  Entry: ${formatSol(pos.entryPrice)}  |  Cost: ${formatSol(pos.costSol)}\n` +
+        `  🎯 AUTO-CLOSE @ +50%  |  <code>${esc(String(durationMin))}</code>m\n`
+      );
       continue;
     }
     
@@ -872,8 +883,110 @@ bot.onText(/^\/open$/, async (msg) => {
   await sendCommand(
     msg.chat.id,
     lines.length 
-      ? `📂 <b>Open positions:</b>\n\n${lines.join('\n')}`
+      ? `📂 <b>Open positions:</b>\n\n${lines.join('\n')}\n\n💡 Use <code>/close_all</code> to force-close all positions`
       : '📂 No open positions.'
+  );
+});
+
+// Close all open positions command
+bot.onText(/^\/close_all$/, async (msg) => {
+  if (!isAdmin(msg)) return;
+  
+  const positions = Object.keys(openPositions);
+  if (positions.length === 0) {
+    await sendCommand(msg.chat.id, '📂 No open positions to close.');
+    return;
+  }
+  
+  await sendCommand(msg.chat.id, `🔄 Force-closing ${positions.length} position(s)...`);
+  
+  let successCount = 0;
+  let failCount = 0;
+  const results: string[] = [];
+  
+  for (const mintStr of positions) {
+    const pos = openPositions[mintStr];
+    if (!pos) continue;
+    
+    try {
+      const tx = await swapTokenForSOL(pos.mint, pos.qty);
+      const solUsd = await getSolUsd();
+      const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+      const entryUsd = pos.costSol * (solUsd || 0);
+      const exitUsd = exitSol * (solUsd || 0);
+      const pnlUsd = exitUsd - entryUsd;
+      const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : 0;
+      
+      // Get token name
+      const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+      const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+      
+      recordTrade({
+        t: Date.now(),
+        kind: 'sell',
+        mode: IS_PAPER ? 'paper' : 'live',
+        mint: mintStr,
+        alpha: pos.alpha,
+        exitPriceSol: pos.entryPrice, // Approximate
+        exitUsd,
+        pnlSol: exitSol - pos.costSol,
+        pnlUsd,
+        pnlPct,
+        durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+        tx: tx.txid,
+      });
+      
+      delete openPositions[mintStr];
+      successCount++;
+      results.push(`✅ ${tokenDisplay}: ${(pnlPct >= 0 ? '+' : '')}${pnlPct.toFixed(1)}%`);
+    } catch (err: any) {
+      failCount++;
+      const errMsg = err?.message || String(err);
+      
+      // If it's a dead token or rate limit, just remove it
+      if (isDeadTokenError(err) || errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('DNS')) {
+        const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+        const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+        
+        // Record as 100% loss for dead tokens
+        if (isDeadTokenError(err)) {
+          const solUsd = await getSolUsd();
+          const entryUsd = pos.costSol * (solUsd || 0);
+          recordTrade({
+            t: Date.now(),
+            kind: 'sell',
+            mode: IS_PAPER ? 'paper' : 'live',
+            mint: mintStr,
+            alpha: pos.alpha,
+            exitPriceSol: 0,
+            exitUsd: 0,
+            pnlSol: -pos.costSol,
+            pnlUsd: -entryUsd,
+            pnlPct: -100,
+            durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+            tx: 'DEAD_TOKEN',
+          });
+        }
+        
+        delete openPositions[mintStr];
+        results.push(`⚠️ ${tokenDisplay}: removed (${isDeadTokenError(err) ? 'dead token' : 'rate limit'})`);
+      } else {
+        results.push(`❌ ${short(mintStr)}: ${errMsg.slice(0, 50)}`);
+      }
+    }
+    
+    // Small delay between exits to avoid rate limits
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  
+  savePositions(serializeLivePositions(openPositions));
+  
+  await sendCommand(
+    msg.chat.id,
+    `📊 <b>Close all results:</b>\n\n` +
+    `✅ Success: ${successCount}\n` +
+    `❌ Failed: ${failCount}\n\n` +
+    results.join('\n')
   );
 });
 
