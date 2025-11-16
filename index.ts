@@ -2883,7 +2883,9 @@ async function manageExit(mintStr: string) {
           persistPositions();
           return;
         } catch (err: any) {
-          await alert(`❌ Exit failed for ${mintStr.slice(0, 12)}...: ${err.message || err}`);
+          const result = await handleExitError(err, mintStr, pos, 'trailing_stop');
+          if (result === 'removed') return;
+          // Continue to other exit checks
         }
       }
     }
@@ -2977,7 +2979,9 @@ async function postBuySentry(mintStr: string) {
         persistPositions();
         return;
       } catch (err: any) {
-        await alert(`❌ Sentry exit failed for ${mintStr.slice(0, 12)}...: ${err.message || err}`);
+        const result = await handleExitError(err, mintStr, pos, 'max_loss'); // Use max_loss type for sentry
+        if (result === 'removed') return;
+        // Continue sentry monitoring
       }
     }
   }
