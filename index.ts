@@ -1296,25 +1296,31 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     const entryUsd = buySol * (solUsd || 0);
     const tokenAmount = tx.outAmount ? Number(tx.outAmount) : 0;
     
-    // Step 5: Create position
+    // Step 5: Calculate ACTUAL entry price from swap result (not quote price)
+    // Entry price = SOL spent / tokens received
+    const actualEntryPrice = tokenAmount > 0 ? buySol / tokenAmount : currentPrice;
+    const finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : currentPrice;
+    
+    // Step 6: Create position with actual entry price
     const pos: LivePosition = {
       mint: mintPk,
       qty: BigInt(Math.floor(tokenAmount)),
-      entryPrice: currentPrice,
+      entryPrice: finalEntryPrice, // Use actual swap result, not quote price
       entryTime: Date.now(),
       costSol: buySol,
       alpha: 'force_buy',
-      highPrice: currentPrice,
+      highPrice: finalEntryPrice,
     };
     openPositions[mintStr] = pos;
     persistPositions();
     
-    // Step 6: Send notifications
+    // Step 7: Send notifications with actual entry price
     const tag = '[PAPER] ';
+    const entryPriceUsd = finalEntryPrice * (solUsd || 0);
     await tgQueue.enqueue(() => bot.sendMessage(
       TELEGRAM_CHAT_ID,
       `${tag}🔨 Force buy: <b>${tokenDisplay}</b>\n` +
-      `Entry: ${formatSol(currentPrice)}${solUsd ? ` (~${formatUsd(currentPrice * (solUsd || 0))})` : ''}\n` +
+      `Entry: ${formatSol(finalEntryPrice)}${solUsd ? ` (~${formatUsd(entryPriceUsd)})` : ''}\n` +
       `Size: ${formatSol(buySol)}${solUsd ? ` (~${formatUsd(entryUsd)})` : ''}\n` +
       `Liquidity: ${formatUsd(liquidityUsd)}\n` +
       `Tokens: ${tokenAmount.toLocaleString()}`,
