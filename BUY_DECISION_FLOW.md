@@ -104,6 +104,13 @@ This document explains **exactly** how the bot decides to buy a token based on a
 - **If price > 2x alpha entry:** ❌ **REJECT** - "Price too high vs alpha entry"
 - **If price <= 2x alpha entry:** ✅ **PASS**
 
+**⚠️ POTENTIAL ISSUE:** If alpha enters very early at a low price, and by the time the bot detects the signal the price has moved up 3x, 5x, or more, the bot will reject it even though the token might still be growing.
+
+**Example:**
+- Alpha enters at: 0.000001 SOL/token
+- Bot detects signal, current price: 0.000005 SOL/token
+- Ratio: 5x → ❌ **BLOCKED** (exceeds 2x limit)
+
 **Note:** If alpha entry price unavailable, this guard is skipped (but may cause issues)
 
 #### Guard 5: Position Sizing 📏
