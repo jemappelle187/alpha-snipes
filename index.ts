@@ -1455,7 +1455,7 @@ async function liveSwapSOLforToken(
   return { txid: result.txid, outAmount: result.outAmount };
 }
 
-async function liveSwapTokenForSOL(mint: PublicKey, tokenAmount: bigint): Promise<{ txid: string }> {
+async function liveSwapTokenForSOL(mint: PublicKey, tokenAmount: bigint): Promise<{ txid: string; solOutLamports?: number }> {
   const SOL = 'So11111111111111111111111111111111111111112';
   const params = {
     inputMint: mint,
@@ -1466,20 +1466,55 @@ async function liveSwapTokenForSOL(mint: PublicKey, tokenAmount: bigint): Promis
     wallet: walletKeypair,
   };
 
-  const result = await swapWithDEXFallback(
-    async () => {
-  const quote = await getJupiterQuote(mint.toBase58(), SOL, Number(tokenAmount), 300);
-  const swapTx = await getJupiterSwapTransaction(quote);
-  const txid = await executeSwap(swapTx);
-  dbg(`[SWAP] Jupiter swap successful | txid: ${txid} | dex: jupiter`);
-  return { txid };
-    },
-    params,
-    ENABLE_ORCA_FALLBACK,
-    ENABLE_RAYDIUM_FALLBACK
-  );
-  dbg(`[SWAP] Sell swap completed | txid: ${result.txid} | dex: ${result.dex || 'jupiter'}`);
-  return { txid: result.txid };
+  // Retry logic with exponential backoff for rate limits
+  let lastError: Error | null = null;
+  const maxRetries = 3;
+  const baseDelay = 2000; // 2 seconds
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const result = await swapWithDEXFallback(
+        async () => {
+          const quote = await getJupiterQuote(mint.toBase58(), SOL, Number(tokenAmount), 300);
+          if (!quote || !quote.outAmount) {
+            throw new Error('no_route: Jupiter could not find a swap path (dead token or no liquidity)');
+          }
+          const swapTx = await getJupiterSwapTransaction(quote);
+          const txid = await executeSwap(swapTx);
+          dbg(`[SWAP] Jupiter swap successful | txid: ${txid} | dex: jupiter`);
+          return { txid, solOutLamports: Number(quote.outAmount) };
+        },
+        params,
+        ENABLE_ORCA_FALLBACK,
+        ENABLE_RAYDIUM_FALLBACK
+      );
+      dbg(`[SWAP] Sell swap completed | txid: ${result.txid} | dex: ${result.dex || 'jupiter'}`);
+      return { txid: result.txid, solOutLamports: result.solOutLamports ? Number(result.solOutLamports) : undefined };
+    } catch (err: any) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const errMsg = err?.message || String(err);
+      
+      // Check if it's a "no route" error (dead token)
+      if (errMsg.includes('no_route') || errMsg.includes('No route') || errMsg.includes('could not find a swap path')) {
+        throw new Error('DEAD_TOKEN: No liquidity route available - token is dead or has no liquidity');
+      }
+      
+      // Check if it's a rate limit error
+      const isRateLimited = errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('cooldown') || errMsg.includes('backoff');
+      
+      if (isRateLimited && attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt); // Exponential backoff: 2s, 4s, 8s
+        dbg(`[SWAP] Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue; // Retry
+      }
+      
+      // If not rate limited or out of retries, throw the error
+      throw lastError;
+    }
+  }
+  
+  throw lastError || new Error('Swap failed after retries');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1505,6 +1540,92 @@ async function swapTokenForSOL(
     return await paperSell(mint, tokenAmount);
   } else {
     return await liveSwapTokenForSOL(mint, tokenAmount);
+  }
+}
+
+// Helper function to detect if error is a dead token (no route)
+function isDeadTokenError(err: any): boolean {
+  const errMsg = err?.message || String(err);
+  return errMsg.includes('DEAD_TOKEN') || 
+         errMsg.includes('no_route') || 
+         errMsg.includes('No route') || 
+         errMsg.includes('could not find a swap path') ||
+         errMsg.includes('illiquid') ||
+         errMsg.includes('no liquidity');
+}
+
+// Unified exit error handler - handles dead tokens, rate limits, and other errors
+async function handleExitError(
+  err: any,
+  mintStr: string,
+  pos: typeof openPositions[string],
+  exitType: 'max_loss' | 'crashed' | 'liquidity_drop' | 'early_tp' | 'trailing_stop' | 'hard_profit'
+): Promise<'retry' | 'removed'> {
+  const errMsg = err?.message || String(err);
+  
+  // Dead token - remove immediately
+  if (isDeadTokenError(err)) {
+    dbg(`[EXIT] Dead token detected for ${short(mintStr)} (${exitType}) - removing position`);
+    await alert(`💀 Dead token: <b>${short(mintStr)}</b>\nNo liquidity route available. Removing position.`);
+    
+    // Record as 100% loss
+    const solUsd = await getSolUsd();
+    const entryUsd = pos.costSol * (solUsd || 0);
+    recordTrade({
+      t: Date.now(),
+      kind: 'sell',
+      mode: IS_PAPER ? 'paper' : 'live',
+      mint: mintStr,
+      alpha: pos.alpha,
+      exitPriceSol: 0,
+      exitUsd: 0,
+      pnlSol: -pos.costSol,
+      pnlUsd: -entryUsd,
+      pnlPct: -100,
+      durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+      tx: 'DEAD_TOKEN',
+    });
+    
+    delete openPositions[mintStr];
+    savePositions(serializeLivePositions(openPositions));
+    return 'removed';
+  }
+  
+  // Rate limit - exponential backoff with max attempts
+  const isRateLimited = errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('cooldown') || errMsg.includes('backoff');
+  if (isRateLimited) {
+    const rateLimitAttempts = (pos as any).rateLimitAttempts || 0;
+    (pos as any).rateLimitAttempts = rateLimitAttempts + 1;
+    
+    // After 5 attempts, remove position
+    if (rateLimitAttempts >= 5) {
+      dbg(`[EXIT] ${exitType} exit rate limited ${rateLimitAttempts} times for ${short(mintStr)} - removing position`);
+      await alert(`⚠️ ${exitType} exit rate limited repeatedly for ${short(mintStr)}. Removing position.`);
+      delete openPositions[mintStr];
+      savePositions(serializeLivePositions(openPositions));
+      return 'removed';
+    }
+    
+    // Exponential backoff: 30s, 60s, 120s, 240s, 480s
+    const delay = 30_000 * Math.pow(2, Math.min(rateLimitAttempts, 4));
+    dbg(`[EXIT] ${exitType} exit rate limited for ${short(mintStr)} - retrying in ${delay/1000}s (attempt ${rateLimitAttempts + 1}/5)`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+    return 'retry';
+  }
+  
+  // Other errors - track attempts and remove after 3 failures
+  const errorAttempts = (pos as any).errorAttempts || 0;
+  if (errorAttempts < 2) {
+    (pos as any).errorAttempts = errorAttempts + 1;
+    await alert(`❌ ${exitType} exit failed for ${short(mintStr)}: ${errMsg}`);
+    await new Promise(resolve => setTimeout(resolve, 30_000));
+    return 'retry';
+  } else {
+    dbg(`[EXIT] ${exitType} exit failed ${errorAttempts + 1} times for ${short(mintStr)} - removing position`);
+    await alert(`⚠️ ${exitType} exit failed repeatedly for ${short(mintStr)}. Removing position.`);
+    delete openPositions[mintStr];
+    savePositions(serializeLivePositions(openPositions));
+    return 'removed';
   }
 }
 
@@ -2412,7 +2533,8 @@ async function manageExit(mintStr: string) {
             savePositions(serializeLivePositions(openPositions));
             return;
           } catch (err: any) {
-            dbg(`[EXIT] Failed to exit on liquidity drop for ${short(mintStr)}: ${err.message || err}`);
+            const result = await handleExitError(err, mintStr, pos, 'liquidity_drop');
+            if (result === 'removed') return;
             // Continue to other exit checks
           }
         }
@@ -2469,18 +2591,9 @@ async function manageExit(mintStr: string) {
           savePositions(serializeLivePositions(openPositions));
           return;
         } catch (err: any) {
-          const errMsg = err?.message || String(err);
-          const isRateLimited = errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('cooldown');
-          
-          if (isRateLimited) {
-            dbg(`[EXIT] Crashed token exit rate limited for ${short(mintStr)} - will retry after cooldown`);
-            // Wait 60 seconds before retry
-            await new Promise(resolve => setTimeout(resolve, 60_000));
-            continue;
-          } else {
-            dbg(`[EXIT] Failed to exit crashed token ${short(mintStr)}: ${errMsg}`);
-            // Continue to next iteration - will retry
-          }
+          const result = await handleExitError(err, mintStr, pos, 'crashed');
+          if (result === 'removed') return;
+          continue; // Retry on next iteration
         }
       } else {
         // Price is unreliable but not extreme - skip max loss check but continue monitoring
@@ -2533,34 +2646,9 @@ async function manageExit(mintStr: string) {
         savePositions(serializeLivePositions(openPositions));
         return;
       } catch (err: any) {
-        const errMsg = err?.message || String(err);
-        const isRateLimited = errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('cooldown');
-        
-        if (isRateLimited) {
-          // Rate limited - wait longer before retry, but don't spam alerts
-          dbg(`[EXIT] Max loss exit rate limited for ${short(mintStr)} - will retry after cooldown`);
-          // Don't send alert for rate limits - they're temporary
-          // Wait 60 seconds before next attempt (cooldown period)
-          await new Promise(resolve => setTimeout(resolve, 60_000));
-          continue; // Retry on next iteration
-        } else {
-          // Other error - alert once, then remove position to prevent spam
-          const maxLossAttempts = (pos as any).maxLossAttempts || 0;
-          if (maxLossAttempts < 2) {
-            (pos as any).maxLossAttempts = maxLossAttempts + 1;
-            await alert(`❌ Max loss exit failed for ${short(mintStr)}: ${errMsg}`);
-            // Wait 30 seconds before retry
-            await new Promise(resolve => setTimeout(resolve, 30_000));
-            continue;
-          } else {
-            // Too many failures - remove position without swap to prevent spam
-            dbg(`[EXIT] Max loss exit failed ${maxLossAttempts + 1} times for ${short(mintStr)} - removing position to prevent spam`);
-            await alert(`⚠️ Max loss exit failed repeatedly for ${short(mintStr)}. Removing position to prevent spam.`);
-            delete openPositions[mintStr];
-            savePositions(serializeLivePositions(openPositions));
-            return;
-          }
-        }
+        const result = await handleExitError(err, mintStr, pos, 'max_loss');
+        if (result === 'removed') return;
+        continue; // Retry on next iteration
       }
     }
 
@@ -2625,7 +2713,8 @@ async function manageExit(mintStr: string) {
         savePositions(serializeLivePositions(openPositions));
         return;
       } catch (err: any) {
-        dbg(`[EXIT] Failed to exit on hard profit target for ${short(mintStr)}: ${err.message || err}`);
+        const result = await handleExitError(err, mintStr, pos, 'hard_profit');
+        if (result === 'removed') return;
         // Continue to other exit checks
       }
     }
