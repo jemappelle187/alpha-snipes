@@ -3398,7 +3398,7 @@ async function birdeyeStartupBackfill() {
     return;
   }
 
-  const BACKFILL_WINDOW_SEC = 10 * 60; // Last 10 minutes (increased to catch more missed transactions)
+  const BACKFILL_WINDOW_SEC = 30 * 60; // Last 30 minutes (increased to catch more missed transactions)
   const now = Math.floor(Date.now() / 1000);
   const since = now - BACKFILL_WINDOW_SEC;
 
