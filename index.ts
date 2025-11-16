@@ -2209,6 +2209,18 @@ async function executeCopyTradeFromSignal(opts: {
     // Use lower threshold for alpha signals, higher for watchlist
     const minLiq = source === 'alpha' ? MIN_LIQUIDITY_USD_ALPHA : MIN_LIQUIDITY_USD;
     
+    // Check for liquidity migration (unreliable data - skip)
+    if (liq.isMigrating || liq.errorTag === 'migrating') {
+      dbg(
+        `[GUARD] Liquidity | status=migrating | ❌ FAIL (liquidity migration detected - unreliable data)`
+      );
+      await alert(
+        `⛔️ Skipping <code>${short(mintStr)}</code>: Liquidity is being migrated (unreliable data, potential rug risk)`
+      );
+      pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'liquidity_migrating' });
+      return 'skipped';
+    }
+    
     // Extract liquidityUsd - handle both known (number) and unknown (undefined) cases
     const liquidityUsd: number | undefined = liq.ok && typeof liq.liquidityUsd === 'number' ? liq.liquidityUsd : undefined;
     

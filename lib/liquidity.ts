@@ -17,6 +17,12 @@ type DexPair = {
   priceNative?: string | number; // Price in SOL
   baseToken?: { name?: string; symbol?: string; address?: string };
   quoteToken?: { name?: string; symbol?: string; address?: string };
+  pairLabel?: string; // DexScreener pair label (e.g., "migrating", "verified")
+  info?: {
+    imageUrl?: string;
+    websites?: Array<{ label?: string; url?: string }>;
+    socials?: Array<{ type?: string; url?: string }>;
+  };
 };
 
 export type LiquiditySnapshot = {
@@ -30,7 +36,8 @@ export type LiquiditySnapshot = {
   tokenSymbol?: string | null; // Token symbol from DexScreener
   priceSol?: number | null; // Price in SOL from DexScreener
   error?: string;
-  errorTag?: 'rate_limit' | 'timeout' | 'network' | 'no_pairs' | 'unknown'; // Classify error type
+  errorTag?: 'rate_limit' | 'timeout' | 'network' | 'no_pairs' | 'unknown' | 'migrating'; // Classify error type
+  isMigrating?: boolean; // True if liquidity is being migrated (unreliable data)
 };
 
 const CACHE_DIR = path.resolve(process.cwd(), 'data');
@@ -93,6 +100,12 @@ async function fetchDexScreener(mint: string): Promise<DexPair[]> {
 function bestPair(pairs: DexPair[]): DexPair | null {
   let best: DexPair | null = null;
   for (const pair of pairs) {
+    // Skip pairs that are migrating (unreliable data)
+    const pairLabel = (pair?.pairLabel || '').toLowerCase();
+    if (pairLabel.includes('migrat') || pairLabel.includes('migrating')) {
+      continue; // Skip migrating pairs
+    }
+    
     const liq = Number(pair?.liquidity?.usd ?? pair?.liquidityUsd ?? 0);
     if (!Number.isFinite(liq)) continue;
     if (!best || liq > Number(best?.liquidity?.usd ?? best?.liquidityUsd ?? 0)) {
@@ -119,6 +132,21 @@ export async function getLiquidityResilient(
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const pairs = await fetchDexScreener(mint);
+      
+      // Check if all pairs are migrating (unreliable data)
+      const allPairsMigrating = pairs.length > 0 && pairs.every(p => {
+        const label = (p?.pairLabel || '').toLowerCase();
+        return label.includes('migrat') || label.includes('migrating');
+      });
+      
+      if (allPairsMigrating) {
+        lastError = new Error('liquidity-migrating');
+        errorTag = 'migrating';
+        const shortMint = mint.slice(0, 8) + '...';
+        console.warn(`[LIQ] All pairs migrating for ${shortMint} - skipping (unreliable data)`);
+        continue;
+      }
+      
       const best = bestPair(pairs);
       if (!best || !Number.isFinite(best.liquidityUsd ?? 0)) {
         lastError = new Error('no-pairs');
@@ -162,6 +190,7 @@ export async function getLiquidityResilient(
         tokenName,
         tokenSymbol,
         priceSol,
+        isMigrating: false, // Best pair is not migrating (we filtered those out)
       };
     } catch (err: any) {
       lastError = err;
@@ -221,10 +250,25 @@ export async function getLiquidityResilient(
     }
   }
 
-  // Both DexScreener and Birdeye failed, or DexScreener returned no_pairs
+  // Both DexScreener and Birdeye failed, or DexScreener returned no_pairs or migrating
   console.warn(`[LIQ] DexScreener failed after retries for ${shortMint}: ${lastError ? String(lastError.message || lastError) : 'unknown'} | errorTag=${errorTag}`);
   
-  if (errorTag === 'no_pairs') {
+  if (errorTag === 'migrating') {
+    // Liquidity is migrating - return as known issue (skip, don't fail-open)
+    return {
+      ok: false,
+      source: 'dexscreener',
+      liquidityUsd: 0, // Treat as known low (will be rejected by guard)
+      volume24h: null,
+      pairCreatedAt: null,
+      tokenName: null,
+      tokenSymbol: null,
+      priceSol: null,
+      error: 'liquidity-migrating',
+      errorTag: 'migrating',
+      isMigrating: true,
+    };
+  } else if (errorTag === 'no_pairs') {
     // Known low liquidity (no pairs found) - return 0
     return {
       ok: false,
@@ -237,6 +281,7 @@ export async function getLiquidityResilient(
       priceSol: null,
       error: 'no_pairs',
       errorTag: 'no_pairs',
+      isMigrating: false,
     };
   } else {
     // Provider error (rate_limit, timeout, network) - return undefined liquidity (unknown)
@@ -251,6 +296,7 @@ export async function getLiquidityResilient(
       priceSol: null,
       error: lastError ? String(lastError.message || lastError) : 'unknown',
       errorTag,
+      isMigrating: false,
     };
   }
 }
