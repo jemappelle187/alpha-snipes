@@ -2266,27 +2266,15 @@ async function executeCopyTradeFromSignal(opts: {
       return 'skipped';
     }
 
-    if (!isValidPrice(signal.alphaEntryPrice)) {
-      await alert(`⚠️ Skipping <code>${short(mintStr)}</code>: Alpha entry price unavailable`);
-      pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'alpha_price_missing' });
-      return 'skipped';
-    }
-
-    const ratio = start / signal.alphaEntryPrice;
-    const pricePass = ratio <= MAX_ALPHA_ENTRY_MULTIPLIER;
-    dbg(
-      `[GUARD] Price guard | alphaEntry=${signal.alphaEntryPrice} | botEntry=${start} | ratio=${ratio.toFixed(
-        2
-      )}x | max=${MAX_ALPHA_ENTRY_MULTIPLIER}x | ${pricePass ? '✅ PASS' : '❌ FAIL'}`
-    );
-    if (!pricePass) {
-      await alert(
-        `⛔️ Skipping <code>${short(mintStr)}</code>: Price ${ratio.toFixed(2)}x higher than alpha entry (limit ${
-          MAX_ALPHA_ENTRY_MULTIPLIER
-        }x)`
+    // Price guard removed - bot will enter regardless of price vs alpha entry
+    // This allows catching tokens even if price has moved significantly since alpha entry
+    if (isValidPrice(signal.alphaEntryPrice) && isValidPrice(start)) {
+      const ratio = start / signal.alphaEntryPrice;
+      dbg(
+        `[GUARD] Price guard (DISABLED) | alphaEntry=${signal.alphaEntryPrice.toExponential(3)} | botEntry=${start.toExponential(3)} | ratio=${ratio.toFixed(2)}x | (limit removed - entering anyway)`
       );
-      pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'price_guard' });
-      return 'skipped';
+    } else if (!isValidPrice(signal.alphaEntryPrice)) {
+      dbg(`[GUARD] Alpha entry price unavailable - proceeding without price guard`);
     }
 
     const sizing = computePositionSize({
