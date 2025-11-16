@@ -96,22 +96,25 @@ This document explains **exactly** how the bot decides to buy a token based on a
 
 **If any fail:** ❌ **REJECT** - Reason provided (e.g., "authority not revoked")
 
-#### Guard 4: Price Guard 💰
+#### Guard 4: Price Guard 💰 (DISABLED)
 
-**Check:** `botEntryPrice / alphaEntryPrice <= MAX_ALPHA_ENTRY_MULTIPLIER`
+**Status:** ✅ **REMOVED** - Bot enters regardless of price vs alpha entry
 
-- **Current:** `MAX_ALPHA_ENTRY_MULTIPLIER = 2` (2x)
+**Previous behavior (now disabled):**
+- **Was:** `MAX_ALPHA_ENTRY_MULTIPLIER = 2` (2x limit)
 - **If price > 2x alpha entry:** ❌ **REJECT** - "Price too high vs alpha entry"
-- **If price <= 2x alpha entry:** ✅ **PASS**
 
-**⚠️ POTENTIAL ISSUE:** If alpha enters very early at a low price, and by the time the bot detects the signal the price has moved up 3x, 5x, or more, the bot will reject it even though the token might still be growing.
+**Current behavior:**
+- ✅ **No price limit** - Bot will enter even if price is 5x, 10x, or higher than alpha entry
+- ✅ **Logs ratio for monitoring** but doesn't block entries
+- ✅ **Allows catching tokens** when alpha enters very early and price moves quickly
 
 **Example:**
 - Alpha enters at: 0.000001 SOL/token
 - Bot detects signal, current price: 0.000005 SOL/token
-- Ratio: 5x → ❌ **BLOCKED** (exceeds 2x limit)
+- Ratio: 5x → ✅ **ENTERS** (no limit blocking)
 
-**Note:** If alpha entry price unavailable, this guard is skipped (but may cause issues)
+**Note:** If alpha entry price unavailable, bot proceeds without price comparison
 
 #### Guard 5: Position Sizing 📏
 
