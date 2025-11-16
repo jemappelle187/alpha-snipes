@@ -2698,17 +2698,18 @@ async function manageExit(mintStr: string) {
       continue;
     }
     
-    // Hard profit target: Exit at +200% to secure profits (user requested)
+    // Auto-close at +50% gain (user requested - simple exit strategy)
     const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
     
     // Sanity check: Gain percentage should be reasonable (between -99% and +10000%)
     if (!Number.isFinite(gainPct) || gainPct < -99 || gainPct > 10000) {
-      dbg(`[EXIT] Skipping milestone/profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct})`);
+      dbg(`[EXIT] Skipping profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct})`);
       continue;
     }
     
-    if (gainPct >= 200) {
-      dbg(`[EXIT] Hard profit target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
+    // Exit at +50% gain
+    if (gainPct >= 50) {
+      dbg(`[EXIT] Auto-close at +50% target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
       try {
         const tx = await swapTokenForSOL(pos.mint, pos.qty);
         const solUsd = await getSolUsd();
@@ -2724,11 +2725,19 @@ async function manageExit(mintStr: string) {
         
         await tgQueue.enqueue(() => bot.sendMessage(
           TELEGRAM_CHAT_ID,
-          `🎯 Hard profit target: <b>${tokenDisplay}</b>\n` +
-          `Gain: +${gainPct.toFixed(1)}% (target: +200%)\n` +
-          `Securing profits to limit risk.`,
+          `✅ Auto-close at +50%: <b>${tokenDisplay}</b>\n` +
+          `Gain: +${gainPct.toFixed(1)}% (target: +50%)\n` +
+          `Entry: ${formatSol(pos.entryPrice)} → Exit: ${formatSol(price)}`,
           linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
         ), { chatId: TELEGRAM_CHAT_ID });
+        
+        const summaryLine = solUsd ? 
+          `💡 Bought ${formatUsd(entryUsd)} → Sold ${formatUsd(exitUsd)}  |  ` +
+          `${(pnlUsd >= 0 ? '+' : '')}${formatUsd(pnlUsd)} (${(pnlPct >= 0 ? '+' : '')}${pnlPct.toFixed(1)}%)` : '';
+        await tgQueue.enqueue(() => bot.sendMessage(TELEGRAM_CHAT_ID, summaryLine, { 
+          parse_mode: 'HTML', 
+          disable_web_page_preview: true 
+        }), { chatId: TELEGRAM_CHAT_ID });
         
         recordTrade({
           t: Date.now(),
@@ -2755,8 +2764,9 @@ async function manageExit(mintStr: string) {
       }
     }
     
-    // Milestone alerts: notify at 10%, 20%, 30%, 100%, 200%, 500% gains
-    const milestones = [10, 20, 30, 100, 200, 500];
+    // Milestone alerts: notify at 10%, 20%, 30%, 40% gains (before +50% exit)
+    // Note: We exit at +50%, so milestones stop at 40%
+    const milestones = [10, 20, 30, 40];
     const lastMilestone = (pos as any).lastMilestone || 0;
     const nextMilestone = milestones.find(m => gainPct >= m && m > lastMilestone);
     
@@ -2787,143 +2797,10 @@ async function manageExit(mintStr: string) {
         TELEGRAM_CHAT_ID,
         `${tag}🎉 Milestone: <b>${tokenDisplay}</b> hit +${nextMilestone}%!\n` +
         `Current: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
-        `Unrealized: ${(unrealizedUsd >= 0 ? '+' : '')}${formatUsd(unrealizedUsd)} (${(gainPct >= 0 ? '+' : '')}${gainPct.toFixed(1)}%)`,
+        `Unrealized: ${(unrealizedUsd >= 0 ? '+' : '')}${formatUsd(unrealizedUsd)} (${(gainPct >= 0 ? '+' : '')}${gainPct.toFixed(1)}%)\n` +
+        `Will auto-close at +50%`,
         linkRow({ mint: mintStr, alpha: pos.alpha, chartUrl: liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined })
       ), { chatId: TELEGRAM_CHAT_ID });
-    }
-
-    if (phase === 'early' && price >= earlyTarget) {
-      phase = 'trailing';
-      pos.phase = phase; // Update phase in position
-      const solUsd = await getSolUsd();
-      const priceUsd = price * (solUsd || 0);
-      const tag = IS_PAPER ? '[PAPER] ' : '';
-      
-      // Partial TP: sell a fraction immediately
-      if (PARTIAL_TP_PCT > 0 && pos.costSol > 0) {
-        const sellSizeSol = pos.costSol * PARTIAL_TP_PCT;
-        const exitPriceSol = price;
-        const exitUsd = sellSizeSol * (solUsd || 0);
-        const entryUsd = (pos.costSol * (solUsd || 0)) * PARTIAL_TP_PCT;
-        const pnlUsd = exitUsd - entryUsd;
-        const pnlSol = sellSizeSol * (exitPriceSol - pos.entryPrice) / Math.max(exitPriceSol, 1e-18);
-        const pnlPct = (exitPriceSol / pos.entryPrice - 1) * 100;
-        
-        await tgQueue.enqueue(() => bot.sendMessage(
-          TELEGRAM_CHAT_ID,
-          `${tag}💡 Partial TP: Sold ${formatUsd(exitUsd)}  |  ${(pnlUsd >= 0 ? '+' : '')}${formatUsd(pnlUsd)} (${(pnlPct >= 0 ? '+' : '')}${pnlPct.toFixed(1)}%)`,
-          { parse_mode: 'HTML', disable_web_page_preview: true }
-        ), { chatId: TELEGRAM_CHAT_ID });
-        
-        // Track partial TP event
-        pushEvent({ t: Date.now(), kind: 'partial', mint: mintStr, usd: exitUsd, pnlPct, tx: 'partial' });
-        
-        // Record partial sell to ledger
-        recordTrade({
-          t: Date.now(),
-          kind: 'sell',
-          mode: IS_PAPER ? 'paper' : 'live',
-          mint: mintStr,
-          alpha: pos.alpha,
-          exitPriceSol,
-          exitUsd,
-          pnlSol,
-          pnlUsd,
-          pnlPct,
-          durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
-          tx: 'partial-tp',
-        });
-        
-        // Reduce position size for remainder
-        pos.costSol = pos.costSol * (1 - PARTIAL_TP_PCT);
-      }
-      
-      // Get token name for display
-      const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
-      const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
-      
-      await alert(
-        `${tag}🎯 Early TP hit for <b>${tokenDisplay}</b>\n` +
-        `Price: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
-        `Target: ${formatSol(earlyTarget)}\n` +
-        `${PARTIAL_TP_PCT > 0 ? `Partial: ${(PARTIAL_TP_PCT * 100).toFixed(0)}% sold above` : '(no partial TP configured)'}\n` +
-        `Switching to trailing stop...`
-      );
-    }
-
-    if (phase === 'trailing') {
-      const trailTrigger = pos.highPrice * (1 - TRAIL_STOP_PCT);
-      if (price <= trailTrigger) {
-        try {
-          const tx = await swapTokenForSOL(pos.mint, pos.qty);
-          const solUsd = await getSolUsd();
-          
-          // Calculate compact summary with entry/exit/PnL in USD
-          const entrySol = pos.costSol;
-          const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
-          const pnlSol = exitSol - entrySol;
-          const entryUsd = entrySol * (solUsd || 0);
-          const exitUsd = exitSol * (solUsd || 0);
-          const pnlUsd = exitUsd - entryUsd; // USD PnL = exit USD - entry USD
-          
-          // Calculate percentage from actual exit vs entry (not quote price)
-          const pnl = entrySol > 0 ? (pnlSol / entrySol) * 100 : 0;
-          const priceUsd = price * (solUsd || 0);
-          const durationSec = Math.floor((Date.now() - pos.entryTime) / 1000);
-          
-          const tag = IS_PAPER ? '[PAPER] ' : '';
-          // Get token name for display
-          const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
-          const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
-          const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
-          
-          await tgQueue.enqueue(() => bot.sendMessage(
-            TELEGRAM_CHAT_ID,
-            `${tag}🛑 Trailing stop exit: <b>${tokenDisplay}</b>\n` +
-            `Exit: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}`,
-            linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
-          ), { chatId: TELEGRAM_CHAT_ID });
-          
-          const summaryLine = solUsd ? 
-            `💡 Bought ${formatUsd(entryUsd)} → Sold ${formatUsd(exitUsd)}  |  ` +
-            `${(pnlUsd >= 0 ? '+' : '')}${formatUsd(pnlUsd)} (${(pnl >= 0 ? '+' : '')}${pnl.toFixed(1)}%)` : '';
-          await tgQueue.enqueue(() => bot.sendMessage(TELEGRAM_CHAT_ID, summaryLine, { 
-            parse_mode: 'HTML', 
-            disable_web_page_preview: true 
-          }), { chatId: TELEGRAM_CHAT_ID });
-
-          // Track exit event
-          pushEvent({ t: Date.now(), kind: 'exit', mint: mintStr, pnlUsd, pnlPct: pnl, tx: tx.txid });
-
-          // Record trade in ledger
-          recordTrade({
-            t: Date.now(),
-            kind: 'sell',
-            mode: IS_PAPER ? 'paper' : 'live',
-            mint: mintStr,
-            alpha: pos.alpha,
-            exitPriceSol: price,
-            exitUsd,
-            pnlSol,
-            pnlUsd,
-            pnlPct: pnl,
-            durationSec,
-            tx: tx.txid,
-          });
-
-          if (IS_PAPER && tx.solOutLamports) {
-            await reportPaperPnL(mintStr, pos.costSol, tx.solOutLamports);
-          }
-
-          delete openPositions[mintStr];
-          persistPositions();
-          return;
-        } catch (err: any) {
-          const result = await handleExitError(err, mintStr, pos, 'trailing_stop');
-          if (result === 'removed') return;
-          // Continue to other exit checks
-        }
-      }
     }
   }
 }
