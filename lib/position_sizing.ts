@@ -6,6 +6,7 @@ export type PositionSizingInput = {
   alphaSolSpent?: number;
   signalAgeSec?: number;
   watchlistRetry?: boolean;
+  liquidityPenalty?: number; // Multiplier when liquidity is unknown (e.g., 0.5 = half size)
 };
 
 export type PositionSizingResult = {
@@ -28,6 +29,7 @@ export function computePositionSize(input: PositionSizingInput): PositionSizingR
     alphaSolSpent = baseBuySol,
     signalAgeSec = 0,
     watchlistRetry = false,
+    liquidityPenalty,
   } = input;
 
   let multiplier = 1;
@@ -40,7 +42,14 @@ export function computePositionSize(input: PositionSizingInput): PositionSizingR
   else if (liq < 100000) liquidityFactor = 1.15;
   else liquidityFactor = 1.3;
   multiplier *= liquidityFactor;
-  notes.push(`Liquidity factor: ${liquidityFactor.toFixed(2)} (liq=$${liq.toFixed(0)})`);
+  
+  if (liquidityPenalty !== undefined) {
+    // Apply penalty when liquidity is unknown (provider error)
+    multiplier *= liquidityPenalty;
+    notes.push(`Liquidity penalty: ${liquidityPenalty.toFixed(2)}x (liquidity unknown due to provider error)`);
+  } else {
+    notes.push(`Liquidity factor: ${liquidityFactor.toFixed(2)} (liq=$${liq.toFixed(0)})`);
+  }
 
   const spendRatio = clamp(alphaSolSpent / Math.max(baseBuySol, 1e-9), 0, 5);
   const alphaFactor =

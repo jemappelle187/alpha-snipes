@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import fetch from 'node-fetch';
+import { fetchTokenSnapshot } from './birdeye.js';
 
 type DexPair = {
   chainId?: string;
@@ -20,8 +21,8 @@ type DexPair = {
 
 export type LiquiditySnapshot = {
   ok: boolean;
-  source: 'dexscreener';
-  liquidityUsd: number | null;
+  source?: 'dexscreener' | 'birdeye';
+  liquidityUsd?: number; // undefined = unknown (provider error), 0 = known low liquidity
   volume24h?: number | null;
   pairCreatedAt?: number | null;
   pairAddress?: string;
@@ -29,6 +30,7 @@ export type LiquiditySnapshot = {
   tokenSymbol?: string | null; // Token symbol from DexScreener
   priceSol?: number | null; // Price in SOL from DexScreener
   error?: string;
+  errorTag?: 'rate_limit' | 'timeout' | 'network' | 'no_pairs' | 'unknown'; // Classify error type
 };
 
 const CACHE_DIR = path.resolve(process.cwd(), 'data');
@@ -111,13 +113,16 @@ export async function getLiquidityResilient(
 
   const retries = Math.max(1, opts?.retries ?? 3);
   let lastError: any = null;
+  let errorTag: 'rate_limit' | 'timeout' | 'network' | 'no_pairs' | 'unknown' = 'unknown';
 
+  // Try DexScreener first
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const pairs = await fetchDexScreener(mint);
       const best = bestPair(pairs);
       if (!best || !Number.isFinite(best.liquidityUsd ?? 0)) {
         lastError = new Error('no-pairs');
+        errorTag = 'no_pairs';
         continue;
       }
       const liquidityUsd = Number(best.liquidityUsd ?? best.liquidity?.usd ?? 0) || 0;
@@ -161,28 +166,92 @@ export async function getLiquidityResilient(
     } catch (err: any) {
       lastError = err;
       const shortMint = mint.slice(0, 8) + '...';
-      if (String(err?.message).includes('dexscreener-429')) {
+      const errMsg = String(err?.message || err);
+      
+      // Classify error type
+      if (errMsg.includes('dexscreener-429') || errMsg.includes('429')) {
+        errorTag = 'rate_limit';
         console.warn(`[LIQ] DexScreener failed: HTTP 429 (rate limit) for ${shortMint} - retrying...`);
         await sleep(500 * (attempt + 1));
+      } else if (errMsg.includes('timeout') || errMsg.includes('ETIMEDOUT')) {
+        errorTag = 'timeout';
+        console.warn(`[LIQ] DexScreener failed: timeout for ${shortMint} - retrying...`);
+        await sleep(250 * (attempt + 1));
+      } else if (errMsg.includes('network') || errMsg.includes('ENOTFOUND') || errMsg.includes('ECONNREFUSED')) {
+        errorTag = 'network';
+        console.warn(`[LIQ] DexScreener failed: network error for ${shortMint} - retrying...`);
+        await sleep(250 * (attempt + 1));
       } else {
-        console.warn(`[LIQ] DexScreener failed: ${err?.message || err} for ${shortMint} - retrying...`);
+        errorTag = 'unknown';
+        console.warn(`[LIQ] DexScreener failed: ${errMsg} for ${shortMint} - retrying...`);
         await sleep(250 * (attempt + 1));
       }
     }
   }
 
+  // DexScreener failed - try Birdeye fallback for provider errors (rate_limit, timeout, network)
   const shortMint = mint.slice(0, 8) + '...';
-  console.warn(`[LIQ] DexScreener failed after retries for ${shortMint}: ${lastError ? String(lastError.message || lastError) : 'unknown'}`);
-  return {
-    ok: false,
-    source: 'dexscreener',
-    liquidityUsd: null,
-    volume24h: null,
-    pairCreatedAt: null,
-    tokenName: null,
-    tokenSymbol: null,
-    priceSol: null,
-    error: lastError ? String(lastError.message || lastError) : 'unknown',
-  };
+  if (['rate_limit', 'timeout', 'network'].includes(errorTag)) {
+    try {
+      console.log(`[LIQ] Attempting Birdeye fallback for ${shortMint} (DexScreener ${errorTag})`);
+      const birdeyeSnapshot = await fetchTokenSnapshot(mint);
+      
+      if (birdeyeSnapshot.liquidityUsd !== null && typeof birdeyeSnapshot.liquidityUsd === 'number' && birdeyeSnapshot.liquidityUsd > 0) {
+        const liquidityUsd = birdeyeSnapshot.liquidityUsd;
+        const priceSol = birdeyeSnapshot.price;
+        console.log(`[LIQ] Birdeye fallback: $${liquidityUsd.toFixed(0)} liquidity${priceSol ? `, ${priceSol.toExponential(3)} SOL/token` : ''} for ${shortMint}`);
+        
+        // Cache the Birdeye result
+        toCache(mint, liquidityUsd);
+        
+        return {
+          ok: true,
+          source: 'birdeye',
+          liquidityUsd,
+          volume24h: birdeyeSnapshot.volume24h,
+          priceSol,
+          tokenName: birdeyeSnapshot.name || null,
+          tokenSymbol: birdeyeSnapshot.symbol || null,
+        };
+      } else {
+        console.warn(`[LIQ] Birdeye fallback: no liquidity data for ${shortMint}`);
+      }
+    } catch (birdeyeErr: any) {
+      console.warn(`[LIQ] Birdeye fallback failed for ${shortMint}: ${birdeyeErr?.message || birdeyeErr}`);
+    }
+  }
+
+  // Both DexScreener and Birdeye failed, or DexScreener returned no_pairs
+  console.warn(`[LIQ] DexScreener failed after retries for ${shortMint}: ${lastError ? String(lastError.message || lastError) : 'unknown'} | errorTag=${errorTag}`);
+  
+  if (errorTag === 'no_pairs') {
+    // Known low liquidity (no pairs found) - return 0
+    return {
+      ok: false,
+      source: 'dexscreener',
+      liquidityUsd: 0, // Known low liquidity
+      volume24h: null,
+      pairCreatedAt: null,
+      tokenName: null,
+      tokenSymbol: null,
+      priceSol: null,
+      error: 'no_pairs',
+      errorTag: 'no_pairs',
+    };
+  } else {
+    // Provider error (rate_limit, timeout, network) - return undefined liquidity (unknown)
+    return {
+      ok: false,
+      source: 'dexscreener',
+      liquidityUsd: undefined, // Unknown (provider error)
+      volume24h: null,
+      pairCreatedAt: null,
+      tokenName: null,
+      tokenSymbol: null,
+      priceSol: null,
+      error: lastError ? String(lastError.message || lastError) : 'unknown',
+      errorTag,
+    };
+  }
 }
 

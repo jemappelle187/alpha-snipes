@@ -117,6 +117,7 @@ const MIN_SIZE_INCREASE_RATIO = parseFloat(process.env.MIN_SIZE_INCREASE_RATIO |
 const MAX_SIGNAL_AGE_SEC = parseInt(process.env.MAX_SIGNAL_AGE_SEC || '180', 10); // 3 minutes default
 const MAX_ALPHA_ENTRY_MULTIPLIER = parseFloat(process.env.MAX_ALPHA_ENTRY_MULTIPLIER || '2');
 const MIN_LIQUIDITY_USD = parseFloat(process.env.MIN_LIQUIDITY_USD || '10000');
+const MIN_LIQUIDITY_USD_ALPHA = parseFloat(process.env.MIN_LIQUIDITY_USD_ALPHA || process.env.MIN_LIQUIDITY_USD || '3000'); // Lower threshold for alpha signals
 const ENABLE_WATCHLIST = (process.env.ENABLE_WATCHLIST || 'true') === 'true';
 const WATCHLIST_CHECK_INTERVAL_MS = parseInt(process.env.WATCHLIST_CHECK_INTERVAL_MS || '30000', 10);
 const WATCHLIST_MAX_AGE_MS = parseInt(
@@ -2201,27 +2202,39 @@ async function executeCopyTradeFromSignal(opts: {
       }
     }
 
-    const liquidity = await getLiquidityResilient(mintStr);
-    const liquidityUsd = liquidity.ok && liquidity.liquidityUsd ? liquidity.liquidityUsd : 0;
-    const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
-    const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
-    const liqPass = liquidityUsd >= MIN_LIQUIDITY_USD;
-    dbg(
-      `[GUARD] Liquidity | liquidity=$${liquidityUsd.toFixed(0)} | min=$${MIN_LIQUIDITY_USD} | ${
-        liqPass ? '✅ PASS' : '❌ FAIL'
-      } | source=${liquidity.source || 'dexscreener'}`
-    );
-    if (!liqPass) {
-      await alert(
-        `⛔️ Skipping <code>${short(mintStr)}</code>: Liquidity ${formatUsd(liquidityUsd)} < ${formatUsd(
-          MIN_LIQUIDITY_USD
-        )}`
+    const liq = await getLiquidityResilient(mintStr);
+    const tokenDisplay = liq?.tokenName || liq?.tokenSymbol || short(mintStr);
+    const chartUrl = liq?.pairAddress ? `https://dexscreener.com/solana/${liq.pairAddress}` : undefined;
+    
+    // Use lower threshold for alpha signals, higher for watchlist
+    const minLiq = source === 'alpha' ? MIN_LIQUIDITY_USD_ALPHA : MIN_LIQUIDITY_USD;
+    
+    if (liq.ok && typeof liq.liquidityUsd === 'number') {
+      // Known liquidity value
+      const liquidityUsd = liq.liquidityUsd;
+      const liqPass = liquidityUsd >= minLiq;
+      dbg(
+        `[GUARD] Liquidity | liquidity=$${liquidityUsd.toFixed(0)} | min=$${minLiq} | source=${liq.source ?? 'unknown'} | ${
+          liqPass ? '✅ PASS' : '❌ FAIL'
+        }`
       );
-      pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'liquidity_guard' });
-      if (source === 'alpha') {
-        await queueWatchlistAdd(signal, alpha, 'low_liquidity', txSig);
+      if (!liqPass) {
+        await alert(
+          `⛔️ Skipping <code>${short(mintStr)}</code>: Liquidity ${formatUsd(liquidityUsd)} < ${formatUsd(minLiq)}`
+        );
+        pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'liquidity_guard' });
+        if (source === 'alpha') {
+          await queueWatchlistAdd(signal, alpha, 'low_liquidity', txSig);
+        }
+        return 'skipped';
       }
-      return 'skipped';
+      // Pass liquidityUsd to sizing
+    } else {
+      // Provider failed (rate_limit, timeout, network) → fail OPEN, but log loudly and shrink size
+      dbg(
+        `[GUARD] Liquidity | liquidity=unknown | reason=${liq.errorTag ?? 'unknown'} | FAIL_OPEN (proceeding with reduced size)`
+      );
+      // Will apply liquidity penalty in position sizing
     }
 
       const report = await basicRugChecks(connection, mintPk, BUY_SOL, {
@@ -2281,10 +2294,11 @@ async function executeCopyTradeFromSignal(opts: {
       baseBuySol: BUY_SOL,
       minBuySol: MIN_BUY_SOL,
       maxBuySol: MAX_BUY_SOL,
-      liquidityUsd,
+      liquidityUsd: liq.ok && typeof liq.liquidityUsd === 'number' ? liq.liquidityUsd : 0, // Use 0 if unknown (will apply penalty)
       alphaSolSpent: signal.solSpent,
       signalAgeSec: signal.signalAgeSec ?? 0,
       watchlistRetry: source === 'watchlist',
+      liquidityPenalty: liq.ok && typeof liq.liquidityUsd === 'number' ? undefined : 0.5, // 0.5x size when liquidity unknown
     });
     const buySol = sizing.sizeSol;
 
