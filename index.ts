@@ -544,6 +544,10 @@ function classifyAlphaSignals(tx: any, alpha: string, sig?: string): AlphaSignal
                 sell.mint
               )} | solReceived=${sell.solReceived.toFixed(4)} | tokensSold=${sell.tokensSold.toFixed(2)}`
             );
+            // Trigger exit if we have a position from this alpha for this mint
+            handleAlphaSell(alpha, sell.mint, sig).catch((err) => {
+              console.error(`[CLASSIFY] Failed to handle alpha SELL:`, err);
+            });
           }
         }
       }
@@ -2047,6 +2051,140 @@ setInterval(async () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Transaction Handler with Alpha Scoring
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle alpha wallet SELL - Exit position if we have one from this alpha
+ */
+async function handleAlphaSell(alpha: string, mint: string, txSig: string) {
+  const mintStr = mint;
+  
+  // Check if we have an open position for this mint from this alpha
+  const pos = openPositions[mintStr];
+  if (!pos) {
+    dbg(`[ALPHA_SELL] No open position for ${short(mintStr)} - ignoring SELL`);
+    return;
+  }
+  
+  // Verify this position is from the same alpha wallet
+  if (pos.alpha !== alpha) {
+    dbg(`[ALPHA_SELL] Position from different alpha (${short(pos.alpha || 'unknown')} vs ${short(alpha)}) - ignoring`);
+    return;
+  }
+  
+  dbg(`[ALPHA_SELL] Alpha ${short(alpha)} sold ${short(mintStr)} - exiting position immediately`);
+  
+  try {
+    // Get token info for notification
+    const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+    const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+    const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+    
+    // Notify before exit
+    const tag = IS_PAPER ? '[PAPER] ' : '';
+    await tgQueue.enqueue(
+      () =>
+        bot.sendMessage(
+          TELEGRAM_CHAT_ID,
+          `${tag}🔄 Alpha sold: <b>${tokenDisplay}</b>\n` +
+          `Alpha: <code>${short(alpha)}</code>\n` +
+          `Exiting position immediately...`,
+          linkRow({ mint: mintStr, alpha, tx: txSig, chartUrl })
+        ),
+      { chatId: TELEGRAM_CHAT_ID }
+    );
+    
+    // Exit the position
+    const tx = await swapTokenForSOL(pos.mint, pos.qty);
+    const solUsd = await getSolUsd();
+    
+    const entrySol = pos.costSol;
+    const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+    const pnlSol = exitSol - entrySol;
+    const entryUsd = entrySol * (solUsd || 0);
+    const exitUsd = exitSol * (solUsd || 0);
+    const pnlUsd = exitUsd - entryUsd;
+    const pnl = entrySol > 0 ? (pnlSol / entrySol) * 100 : 0;
+    const durationSec = Math.floor((Date.now() - pos.entryTime) / 1000);
+    
+    // Send exit notification
+    await tgQueue.enqueue(
+      () =>
+        bot.sendMessage(
+          TELEGRAM_CHAT_ID,
+          `${tag}✅ Exited: <b>${tokenDisplay}</b>\n` +
+          `Reason: Alpha sold\n` +
+          `Entry: ${formatSol(entrySol)} → Exit: ${formatSol(exitSol)}\n` +
+          `PnL: ${pnl >= 0 ? '+' : ''}${formatSol(pnlSol)} (${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%)`,
+          linkRow({ mint: mintStr, alpha, tx: tx.txid, chartUrl })
+        ),
+      { chatId: TELEGRAM_CHAT_ID }
+    );
+    
+    const summaryLine = solUsd ? 
+      `💡 Bought ${formatUsd(entryUsd)} → Sold ${formatUsd(exitUsd)}  |  ` +
+      `${(pnlUsd >= 0 ? '+' : '')}${formatUsd(pnlUsd)} (${(pnl >= 0 ? '+' : '')}${pnl.toFixed(1)}%)` : '';
+    await tgQueue.enqueue(() => bot.sendMessage(TELEGRAM_CHAT_ID, summaryLine, { 
+      parse_mode: 'HTML', 
+      disable_web_page_preview: true 
+    }), { chatId: TELEGRAM_CHAT_ID });
+    
+    // Record trade
+    recordTrade({
+      t: Date.now(),
+      kind: 'sell',
+      mode: IS_PAPER ? 'paper' : 'live',
+      mint: mintStr,
+      alpha: pos.alpha,
+      exitPriceSol: exitSol / Number(pos.qty),
+      exitUsd,
+      pnlSol,
+      pnlUsd,
+      pnlPct: pnl,
+      durationSec,
+      tx: tx.txid,
+    });
+    
+    // Remove position
+    delete openPositions[mintStr];
+    persistPositions();
+    
+    dbg(`[ALPHA_SELL] Successfully exited position for ${short(mintStr)}`);
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    console.error(`[ALPHA_SELL] Failed to exit position for ${short(mintStr)}:`, errMsg);
+    
+    // Check if it's a dead token error
+    if (errMsg.includes('no route') || errMsg.includes('illiquid') || errMsg.includes('No route')) {
+      // Dead token - remove position
+      await tgQueue.enqueue(
+        () =>
+          bot.sendMessage(
+            TELEGRAM_CHAT_ID,
+            `${tag}💀 Alpha sold dead token: <b>${short(mintStr)}</b>\n` +
+            `Position removed (no liquidity available)`,
+            linkRow({ mint: mintStr, alpha, tx: txSig })
+          ),
+        { chatId: TELEGRAM_CHAT_ID }
+      );
+      
+      delete openPositions[mintStr];
+      persistPositions();
+    } else {
+      // Other error - alert but keep position
+      await tgQueue.enqueue(
+        () =>
+          bot.sendMessage(
+            TELEGRAM_CHAT_ID,
+            `${tag}⚠️ Failed to exit on alpha SELL: <b>${short(mintStr)}</b>\n` +
+            `Error: ${errMsg}\n` +
+            `Position still open - manual exit may be needed`,
+            linkRow({ mint: mintStr, alpha, tx: txSig })
+          ),
+        { chatId: TELEGRAM_CHAT_ID }
+      );
+    }
+  }
+}
 
 async function handleAlphaTransaction(sig: string, signer: string, label: 'active' | 'candidate') {
   const tx = await safeGetParsedTx(connection, sig);
