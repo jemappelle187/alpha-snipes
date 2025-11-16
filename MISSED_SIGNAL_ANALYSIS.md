@@ -2,23 +2,28 @@
 
 ## Transaction Details
 - **Alpha Wallet:** `8zkJmeQS1J3GUkPvfboeT76bwojADU6dyTZsCBiMdCVp`
-- **Mint:** `EqgcKbiKnVFf2LcyEAFBx3okfMZUHamabWNvRa14moon` (THEKITTYCASHCOIN)
-- **Transaction Time:** 2025-11-16T21:32:16 UTC
-- **Current Time:** ~11.7 minutes later
-- **Transaction Age:** ~702 seconds
+- **Mint:** `EqgcKbiKnVFf2LcyEAFBx3okfMZUHamabWNvRa14moon` (KITTYCASH)
+- **BUY Transaction Time:** ~15 hours ago
+- **SELL Transaction Time:** ~15-16 minutes ago
+- **BUY Age:** ~54,000 seconds (15 hours)
+- **SELL Age:** ~900 seconds (15 minutes)
 
 ## Root Cause: Signal Too Old
 
 ### The Problem
-The transaction happened **~11.7 minutes ago**, but the bot has strict time windows:
+The **BUY transaction** happened **~15 hours ago**, which is way beyond any reasonable signal age window:
 
 1. **Signal Age Guard:** `MAX_SIGNAL_AGE_SEC = 180 seconds (3 minutes)`
-   - The transaction is **702 seconds old** → **3.9x older than allowed**
-   - Bot will skip: `"Signal too old (702s > 180s)"`
+   - The BUY transaction is **54,000 seconds old (15 hours)** → **300x older than allowed**
+   - Bot will skip: `"Signal too old (54000s > 180s)"`
 
 2. **Polling Backup:** Only checks last **30 seconds**
-   - The transaction is **702 seconds old** → **23.4x older than polling window**
+   - The BUY transaction is **54,000 seconds old** → **1,800x older than polling window**
    - Polling backup won't catch it
+
+3. **Birdeye Backfill:** Now checks last **10 minutes**
+   - The BUY transaction is **15 hours old** → **90x older than backfill window**
+   - Even with extended backfill, it's too old
 
 ### Why This Happened
 
@@ -101,11 +106,25 @@ This way:
 ## Immediate Action
 
 For this specific transaction:
-- It's **11.7 minutes old** - too old to trade now
-- Price has likely moved significantly
-- Not worth entering at this point
+- The **BUY was 15 hours ago** - way too old to trade now
+- The **SELLs were 15-16 minutes ago** - also too old (5x over the 3-minute limit)
+- Price has likely moved significantly since the BUY
+- Alpha already sold their position (4 sells totaling ~$304K)
+- **Not worth entering at this point** - we're way too late
 
-**But we should fix the system to catch future transactions!**
+### Why This Happened
+
+**Most Likely Scenario:**
+1. Bot wasn't running 15 hours ago when the BUY happened
+2. OR bot was running but had a detection/classification failure
+3. OR alpha wallet wasn't in the active list 15 hours ago
+
+**The SELLs (15-16 minutes ago):**
+- These are SELL signals, not BUY signals
+- Bot only copies BUY signals, not SELLs
+- So even if detected, bot wouldn't act on them
+
+**But we should fix the system to catch future BUY transactions!**
 
 ---
 
