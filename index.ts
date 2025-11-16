@@ -780,6 +780,7 @@ bot.onText(/^\/help$/, async (msg) => {
       `🗑️ <b>/remove</b> <code>&lt;wallet&gt;</code>\nRemove wallet from tracking\n\n` +
       `📊 <b>/pnl</b> [24h|today]\nShow realized PnL summary\n\n` +
       `📂 <b>/open</b>\nShow open positions with unrealized PnL\n\n` +
+      `🔄 <b>/close_all</b>\nForce-close all open positions\n\n` +
       `🔨 <b>/force_exit</b> <code>&lt;mint&gt;</code>\nManually exit position (paper mode only)\n\n` +
       `💰 <b>/force_sell</b> <code>&lt;mint&gt;</code>\nAlias for /force_exit (paper mode only)\n\n` +
       `🛒 <b>/force_buy</b> <code>&lt;mint&gt;</code> [amount_sol]\nManually buy token (paper mode only)\n\n` +
