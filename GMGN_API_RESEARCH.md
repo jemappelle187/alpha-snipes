@@ -2,11 +2,9 @@
 
 ## Summary
 
-After researching GMGN.ai, **they do not appear to have a public API** like Birdeye does. GMGN.ai is primarily a web-based platform for:
-- Smart money tracking
-- Token discovery and analysis
-- Wallet monitoring (via web interface)
-- Contract security checks
+**UPDATE:** GMGN.ai DOES have an API! See: https://docs.gmgn.ai/index/cooperation-api-integrate-gmgn-solana-trading-api
+
+However, their API is focused on **trading execution**, not **wallet transaction monitoring** like Birdeye provides.
 
 ## What GMGN.ai Offers
 
@@ -18,9 +16,27 @@ After researching GMGN.ai, **they do not appear to have a public API** like Bird
 - ✅ Token security checks
 
 ### API Availability
-- ❌ **No public API documented**
-- ❌ **No developer documentation found**
-- ❌ **No API endpoints discovered**
+- ✅ **Trading API available** - https://docs.gmgn.ai/index/cooperation-api-integrate-gmgn-solana-trading-api
+- ✅ **Requires application** - Based on trading volume
+- ✅ **Rate limited** - One call every 5 seconds
+- ⚠️ **Trading execution only** - Not wallet monitoring
+
+### GMGN Trading API Endpoints
+
+1. **Query Router Endpoint** (Anti-MEV Supported)
+   - `GET /defi/router/v1/sol/tx/get_swap_route`
+   - Gets swap routes (like Jupiter)
+   - Supports JITO Anti-MEV
+
+2. **Submit Transaction Endpoint**
+   - `POST /txproxy/v1/send_transaction`
+   - Submits signed transactions
+
+3. **Transaction Status Query**
+   - `GET /defi/router/v1/sol/tx/get_transaction_status`
+   - Checks transaction status
+
+**Note:** These endpoints are for **executing trades**, not for **monitoring wallet transactions**.
 
 ## Alternatives
 
@@ -49,12 +65,33 @@ After researching GMGN.ai, **they do not appear to have a public API** like Bird
 
 ## Recommendation
 
-**Stick with Birdeye + RPC + DexScreener** for now:
-1. **Birdeye** - Wallet trades (paid API)
-2. **Solana RPC** - Real-time transaction monitoring
-3. **DexScreener** - Price/liquidity data (free API)
+### For Wallet Monitoring (Alpha Detection)
+**Stick with Birdeye + RPC + DexScreener:**
+1. **Birdeye** - Wallet trades (paid API) ✅
+2. **Solana RPC** - Real-time transaction monitoring ✅
+3. **DexScreener** - Price/liquidity data (free API) ✅
 
-GMGN.ai is great for **manual research** but doesn't offer programmatic access.
+**GMGN Trading API** is NOT for wallet monitoring - it's for executing trades.
+
+### For Trade Execution (Alternative to Jupiter)
+**GMGN Trading API could be used as:**
+- Alternative swap router to Jupiter
+- JITO Anti-MEV support
+- Faster execution (potentially)
+
+**However:**
+- Requires application based on trading volume
+- Rate limited (1 call per 5 seconds)
+- We already use Jupiter (working well)
+
+## Conclusion
+
+**GMGN.ai has a Trading API, but it's for execution, not monitoring.**
+
+For our use case (alpha wallet monitoring), we should:
+- ✅ Continue using **Birdeye** for wallet transaction history
+- ✅ Continue using **Jupiter** for trade execution (or consider GMGN as alternative)
+- ⚠️ **GMGN Trading API** could replace Jupiter for swaps, but not needed for wallet monitoring
 
 ## Next Steps
 
