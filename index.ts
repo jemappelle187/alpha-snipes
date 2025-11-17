@@ -317,6 +317,8 @@ async function safeGetParsedTx(connection: any, sig: string): Promise<any | null
 const seenMints = new Set<string>(); // Track processed mint addresses
 const seenSignatures = new Set<string>(); // Track processed transaction signatures
 const recentPaperBuys = new Map<string, number>(); // key -> timestamp for idempotency
+import type { PositionMode } from './lib/positions.js';
+
 let openPositions: Record<
   string,
   {
@@ -329,6 +331,7 @@ let openPositions: Record<
     alpha?: string;
     phase?: 'early' | 'trailing';
     entryLiquidityUsd?: number; // Track liquidity at entry for monitoring
+    mode?: PositionMode; // Explicit mode: 'normal' for standard entries, 'tiny_entry' for probe positions
   }
 > = hydratePositions(loadPositions());
 
@@ -1328,17 +1331,31 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     
     dbg(`[ENTRY][DEBUG] Tiny-entry mode? ${isTinyEntry} | reason=${tinyEntryReason}`);
     
-    // Step 6: Create position with actual entry price
-    const pos: LivePosition = {
+    // Force-buy must always use mode: 'normal' - never tiny_entry
+    // If we cannot get a reliable price, abort instead of creating a bad position
+    if (!isValidPrice(finalEntryPrice) || finalEntryPrice <= 0) {
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Force buy aborted: could not determine reliable entry price for <code>${short(mintStr)}</code>\n\n` +
+        `Price fetch failed and liquidity fallback unavailable. Please try again when price data is available.`
+      );
+      return;
+    }
+    
+    // Step 6: Create position with actual entry price - ALWAYS mode='normal' for force-buy
+    const pos = {
       mint: mintPk,
       qty: BigInt(Math.floor(tokenAmount)),
       entryPrice: finalEntryPrice, // Use actual swap result, not quote price
       entryTime: Date.now(),
-      costSol: buySol,
+      costSol: buySol, // Actual SOL size (e.g. 1.0 SOL)
       alpha: 'force_buy',
       highPrice: finalEntryPrice,
       entryLiquidityUsd: typeof liquidityUsd === 'number' ? liquidityUsd : 0,
+      mode: 'normal' as PositionMode, // Force-buy is always normal mode
     };
+    
+    dbg(`[ENTRY][FORCE] mint=${short(mintStr)} sizeSol=${buySol} mode=${pos.mode} entryPrice=${pos.entryPrice.toExponential(3)} costSol=${pos.costSol}`);
     openPositions[mintStr] = pos;
     persistPositions();
     
@@ -2408,6 +2425,15 @@ async function executeCopyTradeFromSignal(opts: {
     // Store entry liquidity for monitoring (use 0 if unknown - we'll skip liquidity drop detection in that case)
     const entryLiquidity = typeof liquidityUsd === 'number' ? liquidityUsd : 0;
     
+    // Determine position mode: tiny_entry only for actual probe positions (small size + unknown liquidity)
+    // Force-buy and normal auto-buys always use 'normal' mode
+    const TINY_ENTRY_MAX_SOL = 0.01; // Only positions < 0.01 SOL can be tiny_entry
+    const liquidityUnknown = typeof liquidityUsd !== 'number';
+    const isTinyProbe = buySol < TINY_ENTRY_MAX_SOL && liquidityUnknown;
+    const positionMode: PositionMode = isTinyProbe ? 'tiny_entry' : 'normal';
+    
+    dbg(`[ENTRY] Position mode: ${positionMode} | sizeSol=${buySol} | liquidityUnknown=${liquidityUnknown}`);
+    
     openPositions[mintStr] = {
         mint: mintPk,
         qty,
@@ -2417,6 +2443,7 @@ async function executeCopyTradeFromSignal(opts: {
         entryTime,
       alpha,
       entryLiquidityUsd: entryLiquidity, // Store for liquidity drop detection (0 = unknown, skip detection)
+      mode: positionMode, // Explicit mode: 'normal' for standard entries, 'tiny_entry' for probe positions
       };
     persistPositions();
 
@@ -2644,17 +2671,15 @@ async function manageExit(mintStr: string) {
     return;
   }
 
-  // Special handling for extremely small entry prices (< 1e-9)
-  // These occur when tokens have massive supply and tiny decimals, causing price ratio calculations to explode
-  // ONLY use tiny-entry mode if entryPrice is truly tiny AND we have a valid price (not null/0 from failed fetch)
-  const TINY_ENTRY_THRESHOLD = 1e-9;
-  const hasValidEntryPrice = isValidPrice(pos.entryPrice) && pos.entryPrice > 0;
-  const useTinyEntryMode = hasValidEntryPrice && pos.entryPrice < TINY_ENTRY_THRESHOLD;
+  // Use explicit mode instead of inferring from entryPrice
+  // mode='tiny_entry' is set at position creation for actual probe positions
+  // mode='normal' is used for all standard entries (including force-buy)
+  const useTinyEntryMode = pos.mode === 'tiny_entry';
   
   if (useTinyEntryMode) {
-    dbg(`[EXIT] Entry price extremely small (${pos.entryPrice.toExponential(3)}) for ${short(mintStr)} — switching to absolute-price exit mode`);
-  } else if (!hasValidEntryPrice) {
-    dbg(`[EXIT] Entry price invalid (${pos.entryPrice}) for ${short(mintStr)} - this should not happen for normal entries. Price fetch may have failed during entry.`);
+    dbg(`[EXIT] Tiny-entry mode for ${short(mintStr)} (mode=${pos.mode}) — using absolute-price exit mode`);
+  } else {
+    dbg(`[EXIT] Normal mode for ${short(mintStr)} (mode=${pos.mode || 'normal'}) — using standard exit logic`);
   }
 
   // Simple exit strategy: auto-close at +20% (no early TP or trailing stop)
@@ -2719,7 +2744,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-          dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=tiny_entry_unreliable_price | pnl=${pnlPct.toFixed(1)}%`);
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=tiny_entry_unreliable_price | pnl=${pnlPct.toFixed(1)}%`);
           delete openPositions[mintStr];
           savePositions(serializeLivePositions(openPositions));
           return;
@@ -2769,7 +2794,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-          dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=tiny_entry_tp | pnl=${pnlPct.toFixed(1)}%`);
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=tiny_entry_tp | pnl=${pnlPct.toFixed(1)}%`);
           delete openPositions[mintStr];
           savePositions(serializeLivePositions(openPositions));
           return;
@@ -2844,7 +2869,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-          dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=dead_token | pnl=${pnlPct.toFixed(1)}%`);
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=dead_token | pnl=${pnlPct.toFixed(1)}%`);
           delete openPositions[mintStr];
           savePositions(serializeLivePositions(openPositions));
           return;
@@ -2917,7 +2942,7 @@ async function manageExit(mintStr: string) {
               tx: tx.txid,
             });
             
-            dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=liquidity_drop | pnl=${pnlPct.toFixed(1)}%`);
+            dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=liquidity_drop | pnl=${pnlPct.toFixed(1)}%`);
             delete openPositions[mintStr];
             savePositions(serializeLivePositions(openPositions));
             return;
@@ -2976,7 +3001,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-            dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=crashed_token | pnl=${pnlPct.toFixed(1)}%`);
+            dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=crashed_token | pnl=${pnlPct.toFixed(1)}%`);
             delete openPositions[mintStr];
             savePositions(serializeLivePositions(openPositions));
             return;
@@ -3032,7 +3057,7 @@ async function manageExit(mintStr: string) {
           tx: tx.txid,
         });
         
-        dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=max_loss | pnl=${currentLossPct.toFixed(1)}%`);
+        dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=max_loss | pnl=${currentLossPct.toFixed(1)}%`);
         delete openPositions[mintStr];
         savePositions(serializeLivePositions(openPositions));
         return;

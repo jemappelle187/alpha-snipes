@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { PublicKey } from '@solana/web3.js';
 
+export type PositionMode = 'normal' | 'tiny_entry';
+
 export type StoredPosition = {
   mint: string;
   qty: string;
@@ -12,6 +14,7 @@ export type StoredPosition = {
   alpha?: string;
   phase?: 'early' | 'trailing';
   entryLiquidityUsd?: number;
+  mode?: PositionMode; // Explicit mode: 'normal' for standard entries, 'tiny_entry' for probe positions
 };
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -58,6 +61,7 @@ export function serializeLivePositions(
       alpha?: string;
       phase?: 'early' | 'trailing';
       entryLiquidityUsd?: number;
+      mode?: PositionMode;
     }
   >
 ): PositionMap {
@@ -73,6 +77,7 @@ export function serializeLivePositions(
       alpha: pos.alpha,
       phase: pos.phase,
       entryLiquidityUsd: pos.entryLiquidityUsd,
+      mode: pos.mode || 'normal', // Default to 'normal' for backward compatibility
     };
   }
   return out;
@@ -89,6 +94,7 @@ export function hydratePositions(data: PositionMap) {
     alpha?: string;
     phase?: 'early' | 'trailing';
     entryLiquidityUsd?: number;
+    mode?: PositionMode;
   }> = {};
 
   for (const entry of Object.values(data)) {
@@ -104,6 +110,7 @@ export function hydratePositions(data: PositionMap) {
         alpha: entry.alpha,
         phase: entry.phase ?? 'early',
         entryLiquidityUsd: entry.entryLiquidityUsd,
+        mode: entry.mode || 'normal', // Default to 'normal' for backward compatibility
       };
     } catch (err) {
       console.warn('[POSITIONS] Failed to hydrate entry', entry.mint, err);
