@@ -2426,13 +2426,24 @@ async function executeCopyTradeFromSignal(opts: {
     const entryLiquidity = typeof liquidityUsd === 'number' ? liquidityUsd : 0;
     
     // Determine position mode: tiny_entry only for actual probe positions (small size + unknown liquidity)
-    // Force-buy and normal auto-buys always use 'normal' mode
+    // Watchlist auto-buys and force-buys always use 'normal' mode when liquidity is known
     const TINY_ENTRY_MAX_SOL = 0.01; // Only positions < 0.01 SOL can be tiny_entry
     const liquidityUnknown = typeof liquidityUsd !== 'number';
-    const isTinyProbe = buySol < TINY_ENTRY_MAX_SOL && liquidityUnknown;
-    const positionMode: PositionMode = isTinyProbe ? 'tiny_entry' : 'normal';
     
-    dbg(`[ENTRY] Position mode: ${positionMode} | sizeSol=${buySol} | liquidityUnknown=${liquidityUnknown}`);
+    // For watchlist auto-buys: we've already validated liquidity is good, so force normal mode
+    // For force-buy: always normal mode (handled separately)
+    // For alpha signals: only tiny_entry if BOTH conditions: small size AND unknown liquidity (fail-open path)
+    let positionMode: PositionMode;
+    if (source === 'watchlist') {
+      // Watchlist auto-buys have passed liquidity/volume checks - always normal
+      positionMode = 'normal';
+      dbg(`[ENTRY][WATCHLIST] opening position mint=${short(mintStr)} sizeSol=${buySol} entryPrice=${finalEntryPrice.toExponential(3)} liquidityUsd=${liquidityUsd} mode=${positionMode} (forced normal - liquidity validated)`);
+    } else {
+      // Alpha signals: only tiny_entry for actual probe positions (fail-open path)
+      const isTinyProbe = buySol < TINY_ENTRY_MAX_SOL && liquidityUnknown;
+      positionMode = isTinyProbe ? 'tiny_entry' : 'normal';
+      dbg(`[ENTRY] Position mode: ${positionMode} | sizeSol=${buySol} | liquidityUnknown=${liquidityUnknown}`);
+    }
     
     openPositions[mintStr] = {
         mint: mintPk,
@@ -2771,11 +2782,15 @@ async function manageExit(mintStr: string) {
           const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
           const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
           
+          // Use actual costSol for entry display (not entryPrice which might be tiny)
+          const entrySolDisplay = formatSol(pos.costSol);
+          const exitSolDisplay = formatSol(exitSol);
+          
           await tgQueue.enqueue(() => bot.sendMessage(
             TELEGRAM_CHAT_ID,
             `✅ Tiny entry TP hit: <b>${tokenDisplay}</b>\n` +
             `Gain: +${pnlPct.toFixed(1)}% (fallback TP for tiny entry)\n` +
-            `Entry: ${formatSol(pos.entryPrice)} → Exit: ${formatSol(price)}`,
+            `Entry: ${entrySolDisplay} SOL → Exit: ${exitSolDisplay} SOL`,
             linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
           ), { chatId: TELEGRAM_CHAT_ID });
           
