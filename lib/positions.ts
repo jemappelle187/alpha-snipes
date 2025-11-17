@@ -4,6 +4,8 @@ import { PublicKey } from '@solana/web3.js';
 
 export type PositionMode = 'normal' | 'tiny_entry';
 
+export type CopyTradeSource = 'alpha' | 'watchlist' | 'force';
+
 export type StoredPosition = {
   mint: string;
   qty: string;
@@ -15,6 +17,7 @@ export type StoredPosition = {
   phase?: 'early' | 'trailing';
   entryLiquidityUsd?: number;
   mode?: PositionMode; // Explicit mode: 'normal' for standard entries, 'tiny_entry' for probe positions
+  source?: CopyTradeSource; // Track source for exit logs (alpha/watchlist/force)
 };
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -62,6 +65,7 @@ export function serializeLivePositions(
       phase?: 'early' | 'trailing';
       entryLiquidityUsd?: number;
       mode?: PositionMode;
+      source?: CopyTradeSource;
     }
   >
 ): PositionMap {
@@ -78,6 +82,7 @@ export function serializeLivePositions(
       phase: pos.phase,
       entryLiquidityUsd: pos.entryLiquidityUsd,
       mode: pos.mode || 'normal', // Default to 'normal' for backward compatibility
+      source: pos.source, // Preserve source for exit logs
     };
   }
   return out;
@@ -95,6 +100,7 @@ export function hydratePositions(data: PositionMap) {
     phase?: 'early' | 'trailing';
     entryLiquidityUsd?: number;
     mode?: PositionMode;
+    source?: CopyTradeSource;
   }> = {};
 
   for (const entry of Object.values(data)) {
@@ -111,6 +117,7 @@ export function hydratePositions(data: PositionMap) {
         phase: entry.phase ?? 'early',
         entryLiquidityUsd: entry.entryLiquidityUsd,
         mode: entry.mode || 'normal', // Default to 'normal' for backward compatibility
+        source: entry.source, // Preserve source for exit logs
       };
     } catch (err) {
       console.warn('[POSITIONS] Failed to hydrate entry', entry.mint, err);

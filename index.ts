@@ -2484,6 +2484,7 @@ async function executeCopyTradeFromSignal(opts: {
       alpha,
       entryLiquidityUsd: entryLiquidity, // Store for liquidity drop detection (0 = unknown, skip detection)
       mode: positionMode, // Explicit mode: 'normal' for standard entries, 'tiny_entry' for probe positions
+      source: source, // Track source for exit logs (alpha/watchlist/force)
       };
     persistPositions();
 
@@ -2784,7 +2785,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-          dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=tiny_entry_unreliable_price | pnl=${pnlPct.toFixed(1)}%`);
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=tiny_entry_unreliable_price | pnl=${pnlPct.toFixed(1)}%`);
           delete openPositions[mintStr];
           savePositions(serializeLivePositions(openPositions));
           return;
@@ -2838,7 +2839,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-          dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=tiny_entry_tp | pnl=${pnlPct.toFixed(1)}%`);
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=tiny_entry_tp | pnl=${pnlPct.toFixed(1)}%`);
           delete openPositions[mintStr];
           savePositions(serializeLivePositions(openPositions));
           return;
@@ -2913,7 +2914,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-          dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=dead_token | pnl=${pnlPct.toFixed(1)}%`);
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=dead_token | pnl=${pnlPct.toFixed(1)}%`);
           delete openPositions[mintStr];
           savePositions(serializeLivePositions(openPositions));
           return;
@@ -2986,7 +2987,7 @@ async function manageExit(mintStr: string) {
               tx: tx.txid,
             });
             
-            dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=liquidity_drop | pnl=${pnlPct.toFixed(1)}%`);
+            dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=liquidity_drop | pnl=${pnlPct.toFixed(1)}%`);
             delete openPositions[mintStr];
             savePositions(serializeLivePositions(openPositions));
             return;
@@ -3045,7 +3046,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-            dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=crashed_token | pnl=${pnlPct.toFixed(1)}%`);
+            dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=crashed_token | pnl=${pnlPct.toFixed(1)}%`);
             delete openPositions[mintStr];
             savePositions(serializeLivePositions(openPositions));
             return;
@@ -3101,7 +3102,7 @@ async function manageExit(mintStr: string) {
           tx: tx.txid,
         });
         
-        dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=max_loss | pnl=${currentLossPct.toFixed(1)}%`);
+        dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=max_loss | pnl=${currentLossPct.toFixed(1)}%`);
         delete openPositions[mintStr];
         savePositions(serializeLivePositions(openPositions));
         return;
@@ -3181,7 +3182,7 @@ async function manageExit(mintStr: string) {
           tx: tx.txid,
         });
         
-        dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(1)}%`);
+        dbg(`[EXIT] Position closed for ${short(mintStr)} | source=alpha | mode=${pos.mode || 'normal'} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(2)}%`);
         delete openPositions[mintStr];
         savePositions(serializeLivePositions(openPositions));
         return;
