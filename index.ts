@@ -1879,7 +1879,19 @@ async function getQuotePrice(mint: PublicKey): Promise<number | null> {
     }
   }
   
-  // Both methods failed
+  // LAST RESORT: Try Birdeye API for price
+  try {
+    const { fetchTokenSnapshot } = await import('./lib/birdeye.js');
+    const birdeyeSnapshot = await fetchTokenSnapshot(mintStr);
+    if (birdeyeSnapshot.price && birdeyeSnapshot.price > 0) {
+      dbg(`[PRICE] Birdeye fallback success for ${shortMint}: ${birdeyeSnapshot.price.toExponential(3)} SOL/token`);
+      return birdeyeSnapshot.price;
+    }
+  } catch (birdeyeErr: any) {
+    dbg(`[PRICE] Birdeye fallback failed for ${shortMint}: ${birdeyeErr?.message || birdeyeErr}`);
+  }
+  
+  // All methods failed
   dbg(`[PRICE] All quote methods failed for ${shortMint} - price unavailable`);
   return null;
 }
@@ -2603,6 +2615,15 @@ async function manageExit(mintStr: string) {
     return;
   }
 
+  // Special handling for extremely small entry prices (< 1e-9)
+  // These occur when tokens have massive supply and tiny decimals, causing price ratio calculations to explode
+  const TINY_ENTRY_THRESHOLD = 1e-9;
+  const useTinyEntryMode = pos.entryPrice < TINY_ENTRY_THRESHOLD;
+  
+  if (useTinyEntryMode) {
+    dbg(`[EXIT] Entry price extremely small (${pos.entryPrice.toExponential(3)}) for ${short(mintStr)} — switching to absolute-price exit mode`);
+  }
+
   // Simple exit strategy: auto-close at +50% (no early TP or trailing stop)
   // Phase tracking removed - we just exit at +50%
 
@@ -2624,6 +2645,114 @@ async function manageExit(mintStr: string) {
     
     // Debug: Log price fetch
     dbg(`[EXIT][DEBUG] price=${price}, high=${pos.highPrice}, entry=${pos.entryPrice}, mint=${short(mintStr)}`);
+    
+    // Tiny entry mode: handle extremely small entry prices differently
+    if (useTinyEntryMode) {
+      // If price is null/unavailable → exit immediately (unreliable data)
+      if (!price || !isValidPrice(price)) {
+        dbg(`[EXIT] Tiny entry mode: price unavailable for ${short(mintStr)} - forcing exit`);
+        try {
+          const tx = await swapTokenForSOL(pos.mint, pos.qty);
+          const solUsd = await getSolUsd();
+          const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+          const entryUsd = pos.costSol * (solUsd || 0);
+          const exitUsd = exitSol * (solUsd || 0);
+          const pnlUsd = exitUsd - entryUsd;
+          const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : -100;
+          
+          const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+          const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+          const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+          
+          await tgQueue.enqueue(() => bot.sendMessage(
+            TELEGRAM_CHAT_ID,
+            `⚠️ Tiny entry exit: <b>${tokenDisplay}</b>\n` +
+            `Price unavailable (tiny entry price mode). Exiting to prevent loss.`,
+            linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
+          ), { chatId: TELEGRAM_CHAT_ID });
+          
+          recordTrade({
+            t: Date.now(),
+            kind: 'sell',
+            mode: IS_PAPER ? 'paper' : 'live',
+            mint: mintStr,
+            alpha: pos.alpha,
+            exitPriceSol: pos.entryPrice, // Use entry as estimate
+            exitUsd,
+            pnlSol: exitSol - pos.costSol,
+            pnlUsd,
+            pnlPct,
+            durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+            tx: tx.txid,
+          });
+          
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=tiny_entry_unreliable_price | pnl=${pnlPct.toFixed(1)}%`);
+          delete openPositions[mintStr];
+          savePositions(serializeLivePositions(openPositions));
+          return;
+        } catch (err: any) {
+          const result = await handleExitError(err, mintStr, pos, 'tiny_entry');
+          if (result === 'removed') return;
+          continue;
+        }
+      }
+      
+      // If price > entry by 10% → exit (fallback TP for tiny entries)
+      if (price > pos.entryPrice * 1.1) {
+        dbg(`[EXIT] Tiny entry mode: +10% gain detected for ${short(mintStr)} (${price.toExponential(3)} > ${pos.entryPrice.toExponential(3)} * 1.1)`);
+        try {
+          const tx = await swapTokenForSOL(pos.mint, pos.qty);
+          const solUsd = await getSolUsd();
+          const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+          const entryUsd = pos.costSol * (solUsd || 0);
+          const exitUsd = exitSol * (solUsd || 0);
+          const pnlUsd = exitUsd - entryUsd;
+          const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : 0;
+          
+          const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+          const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+          const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+          
+          await tgQueue.enqueue(() => bot.sendMessage(
+            TELEGRAM_CHAT_ID,
+            `✅ Tiny entry TP hit: <b>${tokenDisplay}</b>\n` +
+            `Gain: +${pnlPct.toFixed(1)}% (fallback TP for tiny entry)\n` +
+            `Entry: ${formatSol(pos.entryPrice)} → Exit: ${formatSol(price)}`,
+            linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
+          ), { chatId: TELEGRAM_CHAT_ID });
+          
+          recordTrade({
+            t: Date.now(),
+            kind: 'sell',
+            mode: IS_PAPER ? 'paper' : 'live',
+            mint: mintStr,
+            alpha: pos.alpha,
+            exitPriceSol: price,
+            exitUsd,
+            pnlSol: exitSol - pos.costSol,
+            pnlUsd,
+            pnlPct,
+            durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+            tx: tx.txid,
+          });
+          
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=tiny_entry_tp | pnl=${pnlPct.toFixed(1)}%`);
+          delete openPositions[mintStr];
+          savePositions(serializeLivePositions(openPositions));
+          return;
+        } catch (err: any) {
+          const result = await handleExitError(err, mintStr, pos, 'tiny_entry_tp');
+          if (result === 'removed') return;
+          continue;
+        }
+      }
+      
+      // Continue monitoring (price is valid but not yet at TP)
+      consecutivePriceFailures = 0;
+      lastPrice = price;
+      if (price > pos.highPrice) pos.highPrice = price;
+      continue; // Skip normal exit logic for tiny entries
+    }
     
     // Record price fetch result for health monitoring
     if (!price || !isValidPrice(price)) {
@@ -2682,6 +2811,7 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=dead_token | pnl=${pnlPct.toFixed(1)}%`);
           delete openPositions[mintStr];
           savePositions(serializeLivePositions(openPositions));
           return;
@@ -2694,6 +2824,7 @@ async function manageExit(mintStr: string) {
               `⚠️ Position removed: <code>${short(mintStr)}</code>\n` +
               `Exit failed due to rate limits. Position removed from tracking.`
             );
+            dbg(`[EXIT] Position removed for ${short(mintStr)} | reason=rate_limit_removal`);
             delete openPositions[mintStr];
             savePositions(serializeLivePositions(openPositions));
             return;
@@ -3266,6 +3397,7 @@ async function main() {
   const mode = IS_PAPER ? '📄 PAPER MODE' : '💰 LIVE MODE';
   console.log(`🚀 Alpha Snipes Bot Starting... ${mode}`);
   console.log(`🔧 SOLANA_RPC_URL: ${RPC_URL}`);
+  console.log(`[CONFIG] MAX_SIGNAL_AGE_SEC = ${MAX_SIGNAL_AGE_SEC}s (${MAX_SIGNAL_AGE_SEC / 60} minutes)`);
   if (USE_HELIUS_RPC) {
     const maskedKey = HELIUS_API_KEY ? `${HELIUS_API_KEY.slice(0, 8)}...${HELIUS_API_KEY.slice(-4)}` : 'extracted from URL';
     console.log(`✅ Helius RPC enabled (API key: ${maskedKey})`);
