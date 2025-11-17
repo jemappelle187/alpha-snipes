@@ -3137,7 +3137,7 @@ async function manageExit(mintStr: string) {
           tx: tx.txid,
         });
         
-        dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(1)}%`);
+        dbg(`[EXIT] Position closed for ${short(mintStr)} | mode=${pos.mode || 'normal'} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(1)}%`);
         delete openPositions[mintStr];
         savePositions(serializeLivePositions(openPositions));
         return;
