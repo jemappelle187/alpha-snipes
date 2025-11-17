@@ -3671,13 +3671,47 @@ async function main() {
   console.log(`   Candidates: ${CANDIDATE_ALPHAS.length}`);
   console.log(`   Use /alpha_list to see details\n`);
 
+  // Build improved system-start message
+  const modeLabel = IS_PAPER ? 'PAPER' : 'LIVE';
+  const modeEmoji = IS_PAPER ? '🚀' : '⚡';
+  const modePrefix = IS_PAPER ? '[PAPER]' : '[LIVE]';
+  const liveWarning = !IS_PAPER ? '\n(REAL MONEY MODE)' : '';
+  
+  const walletShort = short(walletKeypair.publicKey.toBase58());
+  const buySizeDisplay = formatSol(BUY_SOL);
+  const tpPercent = Math.round(EARLY_TP_PCT * 100);
+  const trailPercent = Math.round(TRAIL_STOP_PCT * 100);
+  const minLiquidityDisplay = formatUsd(MIN_LIQUIDITY_USD_ALPHA);
+  const activeWatchers = ACTIVE_ALPHAS.length;
+  const candidateCount = CANDIDATE_ALPHAS.length;
+  
+  // Get version from package.json (synchronous read)
+  let botVersion = '1.0.0';
+  try {
+    const pkgContent = fs.readFileSync('./package.json', 'utf-8');
+    const pkg = JSON.parse(pkgContent);
+    botVersion = pkg.version || '1.0.0';
+  } catch {
+    // Fallback if package.json not available
+  }
+  
+  const startTime = new Date().toISOString();
+  
   await alert(
     [
-      `🚀 <b>Alpha Snipes Bot Started</b> ${IS_PAPER ? '(PAPER MODE)' : '(LIVE)'}`,
-      `Wallet: <code>${walletKeypair.publicKey.toBase58()}</code>`,
-      `Buy: ${BUY_SOL} SOL | TP: ${EARLY_TP_PCT * 100}% | Trail: ${TRAIL_STOP_PCT * 100}%`,
-      `Sentry: ${SENTRY_WINDOW_SEC}s (DD: ${SENTRY_MAX_DD * 100}%)`,
-      `\n🔍 Watching: ${ACTIVE_ALPHAS.length} active, ${CANDIDATE_ALPHAS.length} candidates`,
+      `${modePrefix} ${modeEmoji} <b>Alpha Snipes Bot Started</b>${liveWarning}`,
+      `Mode: <b>${modeLabel}</b>`,
+      `Wallet: <code>${walletShort}</code>`,
+      `Buy Size: ${buySizeDisplay}`,
+      `Take-Profit: +${tpPercent}%`,
+      `Trailing Stop: ${trailPercent}%`,
+      `Sentry Window: ${SENTRY_WINDOW_SEC}s`,
+      `Max Signal Age: ${MAX_SIGNAL_AGE_SEC}s`,
+      `Liquidity Guard: ≥ ${minLiquidityDisplay}`,
+      `Watchers Active: ${activeWatchers}`,
+      `Candidates Monitoring: ${candidateCount}`,
+      `\nVersion: ${botVersion}`,
+      `Started: ${startTime}`,
     ].join('\n')
   );
 
