@@ -1353,6 +1353,7 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
       highPrice: finalEntryPrice,
       entryLiquidityUsd: typeof liquidityUsd === 'number' ? liquidityUsd : 0,
       mode: 'normal' as PositionMode, // Force-buy is always normal mode
+      source: 'force' as CopyTradeSource, // Track source for exit logs
     };
     
     dbg(`[ENTRY][FORCE] mint=${short(mintStr)} sizeSol=${buySol} mode=${pos.mode} entryPrice=${pos.entryPrice.toExponential(3)} costSol=${pos.costSol}`);
