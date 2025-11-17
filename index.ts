@@ -2882,7 +2882,7 @@ async function manageExit(mintStr: string) {
     const priceRatio = Math.max(price / pos.entryPrice, pos.entryPrice / price);
     if (priceRatio > 10) {
       // Price is unreliable - skip milestone and profit calculations
-      dbg(`[EXIT] Skipping milestone/profit calculations for ${short(mintStr)}: price unreliable (ratio: ${priceRatio.toFixed(1)}x)`);
+      dbg(`[EXIT] Skipping milestone/profit calculations for ${short(mintStr)}: price unreliable (ratio: ${priceRatio.toFixed(1)}x, entry=${pos.entryPrice.toExponential(3)}, current=${price.toExponential(3)})`);
       continue;
     }
     
