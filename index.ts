@@ -2624,9 +2624,8 @@ async function executeCopyTradeFromSignal(opts: {
       const refPriceUsd = finalEntryPrice * (solUsd || 0);
       const msgPrefix = source === 'watchlist' ? `${tag}🔁 Watchlist auto-buy` : `${tag}✅ Bought`;
       // tokenDisplay and chartUrl already defined above from liquidity fetch
-    const sizingLine = `Size: ${formatSol(buySol)} (${sizing.multiplier >= 1 ? '▲' : '▼'}×${sizing.multiplier.toFixed(
-      2
-    )})`;
+    // Fixed size: 1 SOL for all flows (no multiplier)
+    const sizingLine = `Size: ${formatSol(buySol)}`;
     
     // Use the entry price from signal if available, otherwise use calculated price
     const displayEntryPrice = isValidPrice(signal.alphaEntryPrice) ? signal.alphaEntryPrice : finalEntryPrice;
