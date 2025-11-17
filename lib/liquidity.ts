@@ -3,6 +3,35 @@ import path from 'path';
 import fetch from 'node-fetch';
 import { fetchTokenSnapshot } from './birdeye.js';
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Normalized Pool Model (for triangulation across providers)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type NormalizedPoolSource = 'dexscreener' | 'birdeye' | 'gmgn';
+
+export type NormalizedPool = {
+  source: NormalizedPoolSource;
+  pairAddress: string;
+  dexLabel?: string;    // Meteora, Raydium, etc.
+  pairLabel?: string;   // "migrating", "main", etc.
+  baseMint: string;
+  quoteMint: string;
+  isBaseToken: boolean; // true if our mint is base
+  liquidityUsd: number;
+  volume24hUsd?: number;
+  price: number;        // price vs SOL (or quote)
+  isMigrating?: boolean;
+  createdAt?: number;
+  tokenName?: string;
+  tokenSymbol?: string;
+};
+
+type LiquidityErrorTag = 'rate_limit' | 'timeout' | 'network' | 'no_pairs' | 'unknown' | 'migrating';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Legacy Types (for backward compatibility)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 type DexPair = {
   chainId?: string;
   dexId?: string;
@@ -36,9 +65,13 @@ export type LiquiditySnapshot = {
   tokenSymbol?: string | null; // Token symbol from DexScreener
   priceSol?: number | null; // Price in SOL from DexScreener
   error?: string;
-  errorTag?: 'rate_limit' | 'timeout' | 'network' | 'no_pairs' | 'unknown' | 'migrating'; // Classify error type
+  errorTag?: LiquidityErrorTag; // Classify error type
   isMigrating?: boolean; // True if liquidity is being migrated (unreliable data)
 };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Cache Management
+// ═══════════════════════════════════════════════════════════════════════════════
 
 const CACHE_DIR = path.resolve(process.cwd(), 'data');
 const CACHE_FILE = path.join(CACHE_DIR, 'liquidity-cache.json');
@@ -73,6 +106,48 @@ function toCache(mint: string, liquidityUsd: number) {
   saveCache();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Pool Cache (for triangulation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const POOL_CACHE_TTL_MS = 60_000;
+
+type PoolCacheEntry = {
+  mint: string;
+  pools: NormalizedPool[];
+  fetchedAt: number;
+};
+
+const poolCache = new Map<string, PoolCacheEntry>();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Error Classification
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function classifyLiquidityError(err: any): LiquidityErrorTag {
+  const errMsg = String(err?.message || err || '');
+  if (errMsg.includes('429') || errMsg.includes('rate limit') || errMsg.includes('rate_limit') || errMsg.includes('cooldown')) {
+    return 'rate_limit';
+  }
+  if (errMsg.includes('timeout') || errMsg.includes('ETIMEDOUT')) {
+    return 'timeout';
+  }
+  if (errMsg.includes('network') || errMsg.includes('ENOTFOUND') || errMsg.includes('ECONNREFUSED') || errMsg.includes('ECONNRESET')) {
+    return 'network';
+  }
+  if (errMsg.includes('no_pairs') || errMsg.includes('no pairs') || errMsg.includes('empty')) {
+    return 'no_pairs';
+  }
+  if (errMsg.includes('migrat')) {
+    return 'migrating';
+  }
+  return 'unknown';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Provider-Specific Pool Fetchers
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -97,23 +172,191 @@ async function fetchDexScreener(mint: string): Promise<DexPair[]> {
   return Array.isArray(json?.pairs) ? (json.pairs as DexPair[]) : [];
 }
 
-function bestPair(pairs: DexPair[]): DexPair | null {
-  let best: DexPair | null = null;
+async function fetchDexscreenerPools(mint: string): Promise<NormalizedPool[]> {
+  const pairs = await fetchDexScreener(mint);
+  const pools: NormalizedPool[] = [];
+
   for (const pair of pairs) {
-    // Skip pairs that are migrating (unreliable data)
+    const liquidityUsd = Number(pair?.liquidity?.usd ?? pair?.liquidityUsd ?? 0);
+    if (!Number.isFinite(liquidityUsd) || liquidityUsd <= 0) continue;
+
+    const priceSol = Number(pair?.priceNative ?? pair?.priceUsd ?? 0);
+    if (!Number.isFinite(priceSol) || priceSol <= 0) continue;
+
+    const baseMint = pair?.baseToken?.address || '';
+    const quoteMint = pair?.quoteToken?.address || '';
+    const isBaseToken = baseMint.toLowerCase() === mint.toLowerCase();
+
+    if (!baseMint || !quoteMint) continue;
+
     const pairLabel = (pair?.pairLabel || '').toLowerCase();
-    if (pairLabel.includes('migrat') || pairLabel.includes('migrating')) {
-      continue; // Skip migrating pairs
-    }
-    
-    const liq = Number(pair?.liquidity?.usd ?? pair?.liquidityUsd ?? 0);
-    if (!Number.isFinite(liq)) continue;
-    if (!best || liq > Number(best?.liquidity?.usd ?? best?.liquidityUsd ?? 0)) {
-      best = { ...pair, liquidityUsd: liq };
-    }
+    const isMigrating = pairLabel.includes('migrat') || pairLabel.includes('migrating');
+
+    pools.push({
+      source: 'dexscreener',
+      pairAddress: pair.pairAddress || '',
+      dexLabel: pair.dexId || pair.chainId || undefined,
+      pairLabel: pair.pairLabel || undefined,
+      baseMint,
+      quoteMint,
+      isBaseToken,
+      liquidityUsd,
+      volume24hUsd: Number(pair?.volume24h ?? pair?.volume?.h24 ?? 0) || undefined,
+      price: priceSol,
+      isMigrating,
+      createdAt: pair.pairCreatedAt ? Number(pair.pairCreatedAt) * 1000 : undefined,
+      tokenName: isBaseToken ? pair.baseToken?.name : pair.quoteToken?.name,
+      tokenSymbol: isBaseToken ? pair.baseToken?.symbol : pair.quoteToken?.symbol,
+    });
   }
-  return best;
+
+  return pools;
 }
+
+async function fetchBirdeyePools(mint: string): Promise<NormalizedPool[]> {
+  const snapshot = await fetchTokenSnapshot(mint);
+  
+  if (!snapshot.liquidityUsd || snapshot.liquidityUsd <= 0) {
+    return [];
+  }
+
+  if (!snapshot.price || snapshot.price <= 0) {
+    return [];
+  }
+
+  // Birdeye doesn't provide pair address in overview, so we'll use a placeholder
+  // In the future, we could fetch pool-specific endpoints if available
+  const pool: NormalizedPool = {
+    source: 'birdeye',
+    pairAddress: `birdeye-${mint}`, // Placeholder - Birdeye overview doesn't give pair address
+    dexLabel: undefined, // Birdeye overview doesn't specify DEX
+    pairLabel: undefined,
+    baseMint: mint,
+    quoteMint: 'So11111111111111111111111111111111111111112', // Assume SOL
+    isBaseToken: true,
+    liquidityUsd: snapshot.liquidityUsd,
+    volume24hUsd: snapshot.volume24hUsd || undefined,
+    price: snapshot.price,
+    isMigrating: false,
+    tokenName: snapshot.name || undefined,
+    tokenSymbol: snapshot.symbol || undefined,
+  };
+
+  return [pool];
+}
+
+async function fetchGmgnPools(mint: string): Promise<NormalizedPool[]> {
+  // Stub for future GMGN integration
+  return [];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Pool Scoring and Selection
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function selectBestPool(pools: NormalizedPool[]): NormalizedPool | null {
+  const candidates = pools.filter(p => {
+    if (!Number.isFinite(p.price) || p.price <= 0) return false;
+    if (p.liquidityUsd <= 0) return false;
+    if (p.isMigrating) return false;
+    if ((p.pairLabel || '').toLowerCase().includes('migrat')) return false;
+    return true;
+  });
+
+  if (!candidates.length) return null;
+
+  function score(p: NormalizedPool): number {
+    const liqScore = Math.log10(Math.max(p.liquidityUsd, 1));
+    const volScore = Math.log10(Math.max(p.volume24hUsd ?? 1, 1));
+    const sourceBias = p.source === 'dexscreener' ? 0.2 : 0; // small tie-breaker
+    return liqScore * 2 + volScore + sourceBias;
+  }
+
+  return candidates.reduce((best, cur) => (score(cur) > score(best) ? cur : best));
+}
+
+function summarizeProviderPools(pools: NormalizedPool[], source: NormalizedPoolSource): string {
+  const providerPools = pools.filter(p => p.source === source);
+  if (providerPools.length === 0) return 'none';
+  const totalLiq = providerPools.reduce((sum, p) => sum + p.liquidityUsd, 0);
+  return `$${totalLiq.toFixed(0)}/${providerPools.length}`;
+}
+
+function formatPool(pool: NormalizedPool): string {
+  return `${pool.source}:$${pool.liquidityUsd.toFixed(0)} ${pool.dexLabel || 'n/a'}`;
+}
+
+function short(mint: string): string {
+  return mint.slice(0, 8) + '...';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Triangulation Function
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export async function triangulatePools(mint: string): Promise<{
+  pools: NormalizedPool[];
+  bestPool: NormalizedPool | null;
+  providerErrors: {
+    dexscreener?: LiquidityErrorTag;
+    birdeye?: LiquidityErrorTag;
+    gmgn?: LiquidityErrorTag;
+  };
+}> {
+  const cached = poolCache.get(mint);
+  const now = Date.now();
+  if (cached && now - cached.fetchedAt < POOL_CACHE_TTL_MS) {
+    return {
+      pools: cached.pools,
+      bestPool: selectBestPool(cached.pools),
+      providerErrors: {},
+    };
+  }
+
+  const allPools: NormalizedPool[] = [];
+  const providerErrors: { [k in NormalizedPoolSource]?: LiquidityErrorTag } = {};
+
+  await Promise.allSettled([
+    (async () => {
+      try {
+        allPools.push(...await fetchDexscreenerPools(mint));
+      } catch (e) {
+        providerErrors.dexscreener = classifyLiquidityError(e);
+      }
+    })(),
+    (async () => {
+      try {
+        allPools.push(...await fetchBirdeyePools(mint));
+      } catch (e) {
+        providerErrors.birdeye = classifyLiquidityError(e);
+      }
+    })(),
+    (async () => {
+      try {
+        allPools.push(...await fetchGmgnPools(mint));
+      } catch (e) {
+        providerErrors.gmgn = classifyLiquidityError(e);
+      }
+    })(),
+  ]);
+
+  poolCache.set(mint, { mint, pools: allPools, fetchedAt: now });
+
+  const bestPool = selectBestPool(allPools);
+
+  console.log(
+    `[LIQ][TRIANGULATE] mint=${short(mint)} | candidates=${allPools.length}` +
+    ` | dexscreener=${summarizeProviderPools(allPools, 'dexscreener')}` +
+    ` | birdeye=${summarizeProviderPools(allPools, 'birdeye')}` +
+    ` | best=${bestPool ? formatPool(bestPool) : 'none'}`
+  );
+
+  return { pools: allPools, bestPool, providerErrors };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Main Liquidity Fetching (with Triangulation)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export async function getLiquidityResilient(
   mint: string,
@@ -124,180 +367,82 @@ export async function getLiquidityResilient(
     return { ok: true, source: 'dexscreener', liquidityUsd: cacheHit };
   }
 
-  const retries = Math.max(1, opts?.retries ?? 3);
-  let lastError: any = null;
-  let errorTag: 'rate_limit' | 'timeout' | 'network' | 'no_pairs' | 'unknown' = 'unknown';
+  // Use triangulation to get pools from multiple providers
+  const { pools, bestPool, providerErrors } = await triangulatePools(mint);
 
-  // Try DexScreener first
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const pairs = await fetchDexScreener(mint);
-      
-      // Check if all pairs are migrating (unreliable data)
-      const allPairsMigrating = pairs.length > 0 && pairs.every(p => {
-        const label = (p?.pairLabel || '').toLowerCase();
-        return label.includes('migrat') || label.includes('migrating');
-      });
-      
-      if (allPairsMigrating) {
-        lastError = new Error('liquidity-migrating');
-        errorTag = 'migrating';
-        const shortMint = mint.slice(0, 8) + '...';
-        console.warn(`[LIQ] All pairs migrating for ${shortMint} - skipping (unreliable data)`);
-        continue;
-      }
-      
-      const best = bestPair(pairs);
-      if (!best || !Number.isFinite(best.liquidityUsd ?? 0)) {
-        lastError = new Error('no-pairs');
-        errorTag = 'no_pairs';
-        continue;
-      }
-      const liquidityUsd = Number(best.liquidityUsd ?? best.liquidity?.usd ?? 0) || 0;
-      const volume24h = Number(best.volume24h ?? best.volume?.h24 ?? 0) || 0;
-      const pairCreatedAt = best.pairCreatedAt ? Number(best.pairCreatedAt) : null;
-      
-      // Extract price in SOL (priceNative is usually in SOL for Solana)
-      let priceSol: number | null = null;
-      if (best.priceNative) {
-        const price = Number(best.priceNative);
-        if (Number.isFinite(price) && price > 0) {
-          priceSol = price;
-        }
-      }
-      
-      // Extract token name and symbol (baseToken is usually the token we're looking for)
-      let tokenName: string | null = null;
-      let tokenSymbol: string | null = null;
-      if (best.baseToken?.address?.toLowerCase() === mint.toLowerCase()) {
-        tokenName = best.baseToken.name || null;
-        tokenSymbol = best.baseToken.symbol || null;
-      } else if (best.quoteToken?.address?.toLowerCase() === mint.toLowerCase()) {
-        tokenName = best.quoteToken.name || null;
-        tokenSymbol = best.quoteToken.symbol || null;
-      }
-      
-      toCache(mint, liquidityUsd);
-      const shortMint = mint.slice(0, 8) + '...';
-      console.log(`[LIQ] DexScreener: $${liquidityUsd.toFixed(0)} liquidity, $${volume24h.toFixed(0)} 24h volume${priceSol ? `, ${priceSol.toExponential(3)} SOL/token` : ''} for ${shortMint}`);
-      return {
-        ok: true,
-        source: 'dexscreener',
-        liquidityUsd,
-        volume24h,
-        pairCreatedAt,
-        pairAddress: best.pairAddress,
-        tokenName,
-        tokenSymbol,
-        priceSol,
-        isMigrating: false, // Best pair is not migrating (we filtered those out)
-      };
-    } catch (err: any) {
-      lastError = err;
-      const shortMint = mint.slice(0, 8) + '...';
-      const errMsg = String(err?.message || err);
-      
-      // Classify error type
-      if (errMsg.includes('dexscreener-429') || errMsg.includes('429')) {
-        errorTag = 'rate_limit';
-        console.warn(`[LIQ] DexScreener failed: HTTP 429 (rate limit) for ${shortMint} - retrying...`);
-        await sleep(500 * (attempt + 1));
-      } else if (errMsg.includes('timeout') || errMsg.includes('ETIMEDOUT')) {
-        errorTag = 'timeout';
-        console.warn(`[LIQ] DexScreener failed: timeout for ${shortMint} - retrying...`);
-        await sleep(250 * (attempt + 1));
-      } else if (errMsg.includes('network') || errMsg.includes('ENOTFOUND') || errMsg.includes('ECONNREFUSED')) {
-        errorTag = 'network';
-        console.warn(`[LIQ] DexScreener failed: network error for ${shortMint} - retrying...`);
-        await sleep(250 * (attempt + 1));
-      } else {
-        errorTag = 'unknown';
-        console.warn(`[LIQ] DexScreener failed: ${errMsg} for ${shortMint} - retrying...`);
-        await sleep(250 * (attempt + 1));
-      }
-    }
-  }
+  let liquidityUsd: number | undefined;
+  let errorTag: LiquidityErrorTag | undefined;
+  let isMigrating = false;
+  let source: 'dexscreener' | 'birdeye' | 'unknown' = 'unknown';
+  let volume24h: number | null = null;
+  let pairCreatedAt: number | null = null;
+  let pairAddress: string | undefined;
+  let tokenName: string | null = null;
+  let tokenSymbol: string | null = null;
+  let priceSol: number | null = null;
 
-  // DexScreener failed - try Birdeye fallback for provider errors (rate_limit, timeout, network)
-  const shortMint = mint.slice(0, 8) + '...';
-  if (['rate_limit', 'timeout', 'network'].includes(errorTag)) {
-    try {
-      console.log(`[LIQ] Attempting Birdeye fallback for ${shortMint} (DexScreener ${errorTag})`);
-      const birdeyeSnapshot = await fetchTokenSnapshot(mint);
-      
-      if (birdeyeSnapshot.liquidityUsd !== null && typeof birdeyeSnapshot.liquidityUsd === 'number' && birdeyeSnapshot.liquidityUsd > 0) {
-        const liquidityUsd = birdeyeSnapshot.liquidityUsd;
-        const priceSol = birdeyeSnapshot.price;
-        console.log(`[LIQ] Birdeye fallback: $${liquidityUsd.toFixed(0)} liquidity${priceSol ? `, ${priceSol.toExponential(3)} SOL/token` : ''} for ${shortMint}`);
-        
-        // Cache the Birdeye result
-        toCache(mint, liquidityUsd);
-        
-        return {
-          ok: true,
-          source: 'birdeye',
-          liquidityUsd,
-          volume24h: birdeyeSnapshot.volume24h,
-          priceSol,
-          tokenName: birdeyeSnapshot.name || null,
-          tokenSymbol: birdeyeSnapshot.symbol || null,
-        };
-      } else {
-        console.warn(`[LIQ] Birdeye fallback: no liquidity data for ${shortMint}`);
-      }
-    } catch (birdeyeErr: any) {
-      console.warn(`[LIQ] Birdeye fallback failed for ${shortMint}: ${birdeyeErr?.message || birdeyeErr}`);
-    }
-  }
+  if (bestPool) {
+    liquidityUsd = bestPool.liquidityUsd;
+    isMigrating = !!bestPool.isMigrating;
+    source = bestPool.source;
+    volume24h = bestPool.volume24hUsd ?? null;
+    pairCreatedAt = bestPool.createdAt ?? null;
+    pairAddress = bestPool.pairAddress;
+    tokenName = bestPool.tokenName ?? null;
+    tokenSymbol = bestPool.tokenSymbol ?? null;
+    priceSol = bestPool.price;
 
-  // Both DexScreener and Birdeye failed, or DexScreener returned no_pairs or migrating
-  console.warn(`[LIQ] DexScreener failed after retries for ${shortMint}: ${lastError ? String(lastError.message || lastError) : 'unknown'} | errorTag=${errorTag}`);
-  
-  if (errorTag === 'migrating') {
-    // Liquidity is migrating - return as known issue (skip, don't fail-open)
+    // Cache the result
+    toCache(mint, liquidityUsd);
+
+    const shortMint = short(mint);
+    console.log(
+      `[LIQ] Triangulated ${shortMint}: ` +
+      `liquidity=$${bestPool.liquidityUsd.toFixed(0)} | ` +
+      `source=${bestPool.source} | pair=${short(bestPool.pairAddress)} | dex=${bestPool.dexLabel || 'n/a'}`
+    );
+
     return {
-      ok: false,
-      source: 'dexscreener',
-      liquidityUsd: 0, // Treat as known low (will be rejected by guard)
-      volume24h: null,
-      pairCreatedAt: null,
-      tokenName: null,
-      tokenSymbol: null,
-      priceSol: null,
-      error: 'liquidity-migrating',
-      errorTag: 'migrating',
-      isMigrating: true,
-    };
-  } else if (errorTag === 'no_pairs') {
-    // Known low liquidity (no pairs found) - return 0
-    return {
-      ok: false,
-      source: 'dexscreener',
-      liquidityUsd: 0, // Known low liquidity
-      volume24h: null,
-      pairCreatedAt: null,
-      tokenName: null,
-      tokenSymbol: null,
-      priceSol: null,
-      error: 'no_pairs',
-      errorTag: 'no_pairs',
-      isMigrating: false,
+      ok: true,
+      source,
+      liquidityUsd,
+      volume24h,
+      pairCreatedAt,
+      pairAddress,
+      tokenName,
+      tokenSymbol,
+      priceSol,
+      isMigrating,
     };
   } else {
-    // Provider error (rate_limit, timeout, network) - return undefined liquidity (unknown)
+    // No best pool found
+    const sawAnyPool = pools.length > 0;
+    if (sawAnyPool) {
+      // We saw pools but all unusable → treat as known low liquidity
+      liquidityUsd = 0;
+      errorTag = 'no_pairs';
+    } else {
+      // All providers failed → unknown liquidity (fail-open path)
+      liquidityUsd = undefined;
+      errorTag = providerErrors.dexscreener || providerErrors.birdeye || providerErrors.gmgn || 'unknown';
+    }
+
+    const shortMint = short(mint);
+    console.warn(`[LIQ] Triangulation failed for ${shortMint}: ${sawAnyPool ? 'all pools unusable' : 'all providers failed'} | errors=${JSON.stringify(providerErrors)}`);
+
     return {
       ok: false,
-      source: 'dexscreener',
-      liquidityUsd: undefined, // Unknown (provider error)
+      source: providerErrors.dexscreener ? 'dexscreener' : providerErrors.birdeye ? 'birdeye' : undefined,
+      liquidityUsd,
       volume24h: null,
       pairCreatedAt: null,
+      pairAddress: undefined,
       tokenName: null,
       tokenSymbol: null,
       priceSol: null,
-      error: lastError ? String(lastError.message || lastError) : 'unknown',
+      error: errorTag,
       errorTag,
       isMigrating: false,
     };
   }
 }
-
