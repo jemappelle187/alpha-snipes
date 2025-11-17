@@ -87,9 +87,10 @@ const COMMAND_CHAT_ID = process.env.COMMAND_CHAT_ID || TELEGRAM_CHAT_ID;
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID || '';
 const LEGACY_ALPHA_WALLET = process.env.ALPHA_WALLET || '';
 
-const BUY_SOL = parseFloat(process.env.BUY_SOL || '0.01');
-const MIN_BUY_SOL = parseFloat(process.env.MIN_BUY_SOL || '0.005');
-const MAX_BUY_SOL = parseFloat(process.env.MAX_BUY_SOL || '0.05');
+// Fixed buy size: 1 SOL for all flows
+const BUY_SOL = 1.0;
+const MIN_BUY_SOL = 1.0;
+const MAX_BUY_SOL = 1.0;
 const EARLY_TP_PCT = parseFloat(process.env.EARLY_TP_PCT || '0.3');
 const TRAIL_STOP_PCT = parseFloat(process.env.TRAIL_STOP_PCT || '0.2');
 const PARTIAL_TP_PCT = Math.max(0, Math.min(1, parseFloat(process.env.PARTIAL_TP_PCT || '0')));
@@ -1352,8 +1353,9 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     
     dbg(`[ENTRY][DEBUG] Price after triangulation: ${currentPrice.toExponential(3)} SOL/token`);
     
-    // Step 3: Determine buy amount
-    const buySol = customAmount || BUY_SOL;
+    // Step 3: Determine buy amount (default 1 SOL, allow custom override)
+    const FORCE_BUY_DEFAULT_SOL = 1.0;
+    const buySol = customAmount || FORCE_BUY_DEFAULT_SOL;
     const buyAmountLamports = Math.floor(buySol * 1e9);
     
     // Step 4: Execute buy
@@ -2561,9 +2563,9 @@ async function executeCopyTradeFromSignal(opts: {
     // Store entry liquidity for monitoring (use 0 if unknown - we'll skip liquidity drop detection in that case)
     const entryLiquidity = typeof liquidityUsd === 'number' ? liquidityUsd : 0;
     
-    // Determine position mode: tiny_entry only for actual probe positions (small size + unknown liquidity/price)
-    // Watchlist auto-buys and force-buys always use 'normal' mode when liquidity is known
-    const TINY_ENTRY_MAX_SOL = 0.01; // Only positions < 0.01 SOL can be tiny_entry
+    // Determine position mode: all entries >= 1 SOL use 'normal' mode
+    // Tiny-entry mode is disabled since all flows use 1 SOL
+    const TINY_ENTRY_MAX_SOL = 0; // Disabled - all entries are 1 SOL
     
     // 1) Liquidity flags
     const liquidityKnown = liq.ok && typeof liquidityUsd === 'number' && Number.isFinite(liquidityUsd);
@@ -2585,17 +2587,12 @@ async function executeCopyTradeFromSignal(opts: {
       // Alpha signals: use normal mode if we have good liquidity AND valid price
       const hasGoodLiquidity = liquidityKnown && liquidityUsdValue! >= MIN_LIQUIDITY_USD_ALPHA;
       
-      // RULES:
-      // - If we have good liquidity AND a usable, non-tiny price → NORMAL
-      // - TINY_ENTRY only when BOTH:
-      //     a) buySol < 0.01 SOL, AND
-      //     b) (liquidityUnknown OR !priceKnown OR isTinyPrice)
-      if (hasGoodLiquidity && priceKnown && !isTinyPrice) {
+      // RULES: All entries >= 1 SOL → always 'normal' mode
+      // Tiny-entry mode is disabled since all flows use 1 SOL
+      if (buySol >= 1.0) {
         positionMode = 'normal';
-      } else if (buySol < TINY_ENTRY_MAX_SOL && (liquidityUnknown || !priceKnown || isTinyPrice)) {
-        positionMode = 'tiny_entry';
       } else {
-        // fallback: if it passed all guards, prefer normal mode
+        // Fallback (should never happen with 1 SOL fixed size)
         positionMode = 'normal';
       }
       
