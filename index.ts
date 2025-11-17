@@ -45,6 +45,7 @@ import {
   savePositions,
   hydratePositions,
   serializeLivePositions,
+  type CopyTradeSource,
 } from './lib/positions.js';
 import {
   addToWatchlist,
