@@ -545,7 +545,7 @@ function classifyAlphaSignals(tx: any, alpha: string, sig?: string): AlphaSignal
                 sell.mint
               )} | solReceived=${sell.solReceived.toFixed(4)} | tokensSold=${sell.tokensSold.toFixed(2)}`
             );
-            // Note: We don't exit on alpha SELL - we only exit at +50% gain
+            // Note: We don't exit on alpha SELL - we only exit at +20% gain
           }
         }
       }
@@ -848,7 +848,7 @@ bot.onText(/^\/open$/, async (msg) => {
       lines.push(
         `⚠️ <a href="${chartUrl}">${tokenDisplay}</a>  [price unavailable]\n` +
         `  Entry: ${formatSol(pos.entryPrice)}  |  Cost: ${formatSol(pos.costSol)}\n` +
-        `  🎯 AUTO-CLOSE @ +50%  |  <code>${esc(String(durationMin))}</code>m\n`
+        `  🎯 AUTO-CLOSE @ +20%  |  <code>${esc(String(durationMin))}</code>m\n`
       );
       continue;
     }
@@ -869,7 +869,7 @@ bot.onText(/^\/open$/, async (msg) => {
     const uSol = (currentPrice - pos.entryPrice) * pos.costSol;
     const uUsd = uSol * (solUsd || 0);
     const sign = uPct >= 0 ? '+' : '';
-    const phaseLabel = '🎯 AUTO-CLOSE @ +50%';
+    const phaseLabel = '🎯 AUTO-CLOSE @ +20%';
     const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
     
     // Highlight profit/loss with emojis and colors
@@ -2624,8 +2624,8 @@ async function manageExit(mintStr: string) {
     dbg(`[EXIT] Entry price extremely small (${pos.entryPrice.toExponential(3)}) for ${short(mintStr)} — switching to absolute-price exit mode`);
   }
 
-  // Simple exit strategy: auto-close at +50% (no early TP or trailing stop)
-  // Phase tracking removed - we just exit at +50%
+  // Simple exit strategy: auto-close at +20% (no early TP or trailing stop)
+  // Phase tracking removed - we just exit at +20%
 
   let consecutivePriceFailures = 0;
   const MAX_PRICE_FAILURES = 12; // ~60s at 5s intervals
@@ -3020,7 +3020,7 @@ async function manageExit(mintStr: string) {
       continue;
     }
     
-    // Auto-close at +50% gain (user requested - simple exit strategy)
+    // Auto-close at +20% gain (user requested - simple exit strategy)
     const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
     
     // Debug: Log gain calculation
@@ -3032,9 +3032,9 @@ async function manageExit(mintStr: string) {
       continue;
     }
     
-    // Exit at +50% gain
-    if (gainPct >= 50) {
-      dbg(`[EXIT] Auto-close at +50% target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
+    // Exit at +20% gain
+    if (gainPct >= 20) {
+      dbg(`[EXIT] Auto-close at +20% target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
       try {
         const tx = await swapTokenForSOL(pos.mint, pos.qty);
         const solUsd = await getSolUsd();
@@ -3050,8 +3050,8 @@ async function manageExit(mintStr: string) {
         
         await tgQueue.enqueue(() => bot.sendMessage(
           TELEGRAM_CHAT_ID,
-          `✅ Auto-close at +50%: <b>${tokenDisplay}</b>\n` +
-          `Gain: +${gainPct.toFixed(1)}% (target: +50%)\n` +
+          `✅ Auto-close at +20%: <b>${tokenDisplay}</b>\n` +
+          `Gain: +${gainPct.toFixed(1)}% (target: +20%)\n` +
           `Entry: ${formatSol(pos.entryPrice)} → Exit: ${formatSol(price)}`,
           linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
         ), { chatId: TELEGRAM_CHAT_ID });
@@ -3079,7 +3079,7 @@ async function manageExit(mintStr: string) {
           tx: tx.txid,
         });
         
-        dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=hard_profit_50pct | pnl=${pnlPct.toFixed(1)}%`);
+        dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(1)}%`);
         delete openPositions[mintStr];
         savePositions(serializeLivePositions(openPositions));
         return;
@@ -3090,9 +3090,9 @@ async function manageExit(mintStr: string) {
       }
     }
     
-    // Milestone alerts: notify at 10%, 20%, 30%, 40% gains (before +50% exit)
-    // Note: We exit at +50%, so milestones stop at 40%
-    const milestones = [10, 20, 30, 40];
+    // Milestone alerts: notify at 10% gain (before +20% exit)
+    // Note: We exit at +20%, so milestones stop at 10%
+    const milestones = [10];
     const lastMilestone = (pos as any).lastMilestone || 0;
     const nextMilestone = milestones.find(m => gainPct >= m && m > lastMilestone);
     
@@ -3124,7 +3124,7 @@ async function manageExit(mintStr: string) {
         `${tag}🎉 Milestone: <b>${tokenDisplay}</b> hit +${nextMilestone}%!\n` +
         `Current: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
         `Unrealized: ${(unrealizedUsd >= 0 ? '+' : '')}${formatUsd(unrealizedUsd)} (${(gainPct >= 0 ? '+' : '')}${gainPct.toFixed(1)}%)\n` +
-        `Will auto-close at +50%`,
+        `Will auto-close at +20%`,
         linkRow({ mint: mintStr, alpha: pos.alpha, chartUrl: liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined })
       ), { chatId: TELEGRAM_CHAT_ID });
     }
