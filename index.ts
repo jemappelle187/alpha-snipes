@@ -2500,17 +2500,9 @@ async function executeCopyTradeFromSignal(opts: {
       dbg(`[GUARD] Alpha entry price unavailable - proceeding without price guard`);
     }
 
-    const sizing = computePositionSize({
-      baseBuySol: BUY_SOL,
-      minBuySol: MIN_BUY_SOL,
-      maxBuySol: MAX_BUY_SOL,
-      liquidityUsd: typeof liquidityUsd === 'number' ? liquidityUsd : 0, // Use 0 if unknown (will apply penalty)
-      alphaSolSpent: signal.solSpent,
-      signalAgeSec: signal.signalAgeSec ?? 0,
-      watchlistRetry: source === 'watchlist',
-      liquidityPenalty: typeof liquidityUsd === 'number' ? undefined : 0.5, // 0.5x size when liquidity unknown
-    });
-    const buySol = sizing.sizeSol;
+    // Fixed buy size: 1 SOL for all flows (alpha, watchlist, force-buy)
+    // Position sizing is bypassed - we always use BUY_SOL
+    const buySol = BUY_SOL;
 
     const buyKey = `${mintStr}:${txSig}:${source}`;
       if (IS_PAPER && !canPaperBuy(buyKey)) {
@@ -2607,6 +2599,12 @@ async function executeCopyTradeFromSignal(opts: {
       dbg(`[ENTRY] Position mode: ${positionMode} | sizeSol=${buySol} | source=${source}`);
     }
     
+    // All entries >= 1 SOL must use mode='normal' (tiny-entry mode disabled)
+    const finalMode: PositionMode = buySol >= 1.0 ? 'normal' : positionMode;
+    
+    // Debug log for position opening
+    dbg(`[ENTRY][OPEN] mint=${short(mintStr)} source=${source} sizeSol=${buySol} mode=${finalMode}`);
+    
     openPositions[mintStr] = {
         mint: mintPk,
         qty,
@@ -2616,7 +2614,7 @@ async function executeCopyTradeFromSignal(opts: {
         entryTime,
       alpha,
       entryLiquidityUsd: entryLiquidity, // Store for liquidity drop detection (0 = unknown, skip detection)
-      mode: positionMode, // Explicit mode: 'normal' for standard entries, 'tiny_entry' for probe positions
+      mode: finalMode, // Explicit mode: 'normal' for all 1 SOL entries, 'tiny_entry' disabled
       source: source, // Track source for exit logs (alpha/watchlist/force)
       };
     persistPositions();
@@ -3645,7 +3643,7 @@ async function main() {
     console.log(`⚠️  Helius RPC URL detected but no API key found`);
   }
   console.log(`📍 Wallet: ${walletKeypair.publicKey.toBase58()}`);
-  console.log(`[CONFIG] BUY_SOL = ${BUY_SOL} SOL (forced for all flows)`);
+  console.log(`[CONFIG] BUY_SOL = ${BUY_SOL} SOL (applied to alpha, watchlist and force-buy)`);
   console.log(`💰 Buy size: ${BUY_SOL} SOL`);
   console.log(`🎯 Early TP: ${EARLY_TP_PCT * 100}%${PARTIAL_TP_PCT > 0 ? ` (Partial: ${PARTIAL_TP_PCT * 100}%)` : ''}`);
   console.log(`🛑 Trailing stop: ${TRAIL_STOP_PCT * 100}%`);
