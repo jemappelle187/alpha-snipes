@@ -1366,33 +1366,42 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     const entryUsd = buySol * (solUsd || 0);
     const tokenAmount = tx.outAmount ? Number(tx.outAmount) : 0;
     
-    // Step 5: Calculate ACTUAL entry price from swap result (not quote price)
-    // Entry price = SOL spent / tokens received
-    const actualEntryPrice = tokenAmount > 0 ? buySol / tokenAmount : currentPrice;
-    const finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : (isValidPrice(currentPrice) ? currentPrice : 0);
+    // Step 5: Calculate ACTUAL entry price from swap result (robust fallback system)
+    // ----- Entry Price Resolution (Final & Correct) -----
+    // 1. Primary: Calculate from actual swap amounts (most accurate)
+    let entryPrice = tokenAmount > 0 ? buySol / tokenAmount : null;
     
-    dbg(`[ENTRY][DEBUG] Entry price calculation: actualEntryPrice=${actualEntryPrice.toExponential(3)}, currentPrice=${currentPrice?.toExponential(3) || 'null'}, finalEntryPrice=${finalEntryPrice.toExponential(3)}`);
+    // 2. Secondary: Use triangulated liquidity price if available
+    if (!entryPrice && liquidity?.priceSol && isValidPrice(liquidity.priceSol)) {
+      entryPrice = liquidity.priceSol;
+      dbg(`[ENTRY][PRICE][FORCE] Using liquidity price: ${entryPrice.toExponential(3)}`);
+    }
     
-    // Check if this should be tiny-entry mode
-    const TINY_ENTRY_THRESHOLD = 1e-9;
-    const isTinyEntry = finalEntryPrice < TINY_ENTRY_THRESHOLD;
-    const tinyEntryReason = isTinyEntry ? 
-      (finalEntryPrice === 0 ? 'entryPrice is 0 (price fetch failed)' : 
-       `entryPrice=${finalEntryPrice.toExponential(3)} < ${TINY_ENTRY_THRESHOLD.toExponential(3)}`) : 
-      'normal entry';
+    // 3. Tertiary: Use pre-swap quote price (currentPrice) if available
+    if (!entryPrice && isValidPrice(currentPrice)) {
+      entryPrice = currentPrice;
+      dbg(`[ENTRY][PRICE][FORCE] Using pre-swap quote price: ${entryPrice.toExponential(3)}`);
+    }
     
-    dbg(`[ENTRY][DEBUG] Tiny-entry mode? ${isTinyEntry} | reason=${tinyEntryReason}`);
+    // 4. Final fallback: Recalculate from swap amounts (should never be needed)
+    if (!entryPrice && tokenAmount > 0) {
+      entryPrice = buySol / tokenAmount;
+      dbg(`[ENTRY][PRICE][FORCE] Derived entry price from swap amounts: ${entryPrice.toExponential(3)}`);
+    }
     
-    // Force-buy must always use mode: 'normal' - never tiny_entry
-    // If we cannot get a reliable price, abort instead of creating a bad position
-    if (!isValidPrice(finalEntryPrice) || finalEntryPrice <= 0) {
+    // If still null/zero, abort (should never happen if swap succeeded)
+    if (!entryPrice || entryPrice <= 0) {
+      dbg(`[ENTRY][PRICE][FATAL][FORCE] Could not compute entry price for mint=${short(mintStr)} — tokenAmount=${tokenAmount}, buySol=${buySol} — aborting.`);
       await sendCommand(
         msg.chat.id,
         `⛔️ Force buy aborted: could not determine reliable entry price for <code>${short(mintStr)}</code>\n\n` +
-        `Price fetch failed and liquidity fallback unavailable. Please try again when price data is available.`
+        `Swap succeeded but entry price calculation failed. This should not happen.`
       );
       return;
     }
+    
+    const finalEntryPrice = entryPrice;
+    dbg(`[ENTRY][DEBUG][FORCE] Entry price calculation: finalEntryPrice=${finalEntryPrice.toExponential(3)}, tokenAmount=${tokenAmount}, buySol=${buySol}`);
     
     // Step 6: Create position with actual entry price - ALWAYS mode='normal' for force-buy
     const pos = {
