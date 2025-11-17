@@ -32,7 +32,7 @@ import {
   listAll,
 } from './alpha/alpha_registry.js';
 import { getSolUsd } from './lib/sol_price.js';
-import { formatSol, formatUsd, short, lamportsToSol, esc, safeAgo } from './lib/format.js';
+import { formatSol, formatUsd, formatTokens, short, lamportsToSol, esc, safeAgo } from './lib/format.js';
 import { linkRow } from './lib/telegram_helpers.js';
 import { tgQueue } from './lib/telegram_rate.js';
 import { recordTrade, readTrades, summarize } from './lib/ledger.js';
@@ -2522,11 +2522,40 @@ async function executeCopyTradeFromSignal(opts: {
       entryTime = Date.now();
       qty = BigInt(buy.outAmount);
       
-      // Calculate actual entry price from the buy transaction
-      // Entry price = SOL spent / tokens received
+      // ----- Entry Price Resolution (Final & Correct) -----
+      // 1. Primary: Calculate from actual swap amounts (most accurate)
       const tokensReceived = Number(qty);
-      const actualEntryPrice = tokensReceived > 0 ? buySol / tokensReceived : start;
-      finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : start;
+      let entryPrice = tokensReceived > 0 ? buySol / tokensReceived : null;
+      
+      // 2. Secondary: Use triangulated liquidity price if available
+      if (!entryPrice && liq?.priceSol && isValidPrice(liq.priceSol)) {
+        entryPrice = liq.priceSol;
+        dbg(`[ENTRY][PRICE] Using liquidity price: ${entryPrice.toExponential(3)}`);
+      }
+      
+      // 3. Tertiary: Use pre-swap quote price (start) if available
+      if (!entryPrice && isValidPrice(start)) {
+        entryPrice = start;
+        dbg(`[ENTRY][PRICE] Using pre-swap quote price: ${entryPrice.toExponential(3)}`);
+      }
+      
+      // 4. Final fallback: Recalculate from swap amounts (should never be needed)
+      if (!entryPrice && tokensReceived > 0) {
+        entryPrice = buySol / tokensReceived;
+        dbg(`[ENTRY][PRICE] Derived entry price from swap amounts: ${entryPrice.toExponential(3)}`);
+      }
+      
+      // If still null/zero, abort (should never happen if swap succeeded)
+      if (!entryPrice || entryPrice <= 0) {
+        dbg(`[ENTRY][PRICE][FATAL] Could not compute entry price for mint=${short(mintStr)} — tokensReceived=${tokensReceived}, buySol=${buySol} — aborting position.`);
+        await alert(
+          `❌ Position creation failed for <code>${short(mintStr)}</code>\n` +
+          `Could not determine entry price after swap. This should not happen.`
+        );
+        return 'skipped';
+      }
+      
+      finalEntryPrice = entryPrice;
     } catch (err: any) {
       const errMsg = err?.message || String(err);
       
@@ -2630,15 +2659,16 @@ async function executeCopyTradeFromSignal(opts: {
     // Use the entry price from signal if available, otherwise use calculated price
     const displayEntryPrice = isValidPrice(signal.alphaEntryPrice) ? signal.alphaEntryPrice : finalEntryPrice;
     const displayEntryPriceUsd = displayEntryPrice * (solUsd || 0);
+    const tokensReceived = Number(qty);
     
     await tgQueue.enqueue(
       () =>
         bot.sendMessage(
         TELEGRAM_CHAT_ID,
           `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
-          `Size: ${formatSol(buySol)}${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
-          `Entry: ${formatSol(displayEntryPrice)} SOL/token${solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''}\n` +
-          `${sizingLine}`,
+          `Entry Price: ${formatSol(displayEntryPrice)} SOL/token${solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''}\n` +
+          `Cost: ${formatSol(buySol)} SOL${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
+          `Tokens: ${formatTokens(tokensReceived)}`,
           linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
         ),
       { chatId: TELEGRAM_CHAT_ID }

@@ -30,6 +30,21 @@ export function formatUsd(n: number): string {
   return nfUsd.format(n);
 }
 
+/** Format token amounts with appropriate precision (e.g., 1.5M, 25.4K, 1,234) */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n >= 1_000_000_000) {
+    return `${(n / 1_000_000_000).toFixed(2)}B`;
+  }
+  if (n >= 1_000_000) {
+    return `${(n / 1_000_000).toFixed(2)}M`;
+  }
+  if (n >= 1_000) {
+    return `${(n / 1_000).toFixed(2)}K`;
+  }
+  return nf.format(n);
+}
+
 /** Shorten long addresses or hashes (e.g., wallet or mint) */
 export function short(str: string, left = 6, right = 4): string {
   if (!str) return '';
