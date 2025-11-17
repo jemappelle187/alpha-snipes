@@ -2889,9 +2889,12 @@ async function manageExit(mintStr: string) {
     // Auto-close at +50% gain (user requested - simple exit strategy)
     const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
     
+    // Debug: Log gain calculation
+    dbg(`[EXIT][DEBUG] gainPct=${gainPct.toFixed(2)}% for ${short(mintStr)} (price=${price.toExponential(3)}, entry=${pos.entryPrice.toExponential(3)})`);
+    
     // Sanity check: Gain percentage should be reasonable (between -99% and +10000%)
     if (!Number.isFinite(gainPct) || gainPct < -99 || gainPct > 10000) {
-      dbg(`[EXIT] Skipping profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct})`);
+      dbg(`[EXIT] Skipping profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct}), price=${price}, entryPrice=${pos.entryPrice}`);
       continue;
     }
     
