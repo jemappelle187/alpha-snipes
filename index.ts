@@ -2589,11 +2589,17 @@ if (ENABLE_WATCHLIST && WATCHLIST_CHECK_INTERVAL_MS > 0) {
 
 async function manageExit(mintStr: string) {
   const pos = openPositions[mintStr];
-  if (!pos) return;
+  if (!pos) {
+    dbg(`[EXIT][DEBUG] manageExit: position not found for ${mintStr}`);
+    return;
+  }
+  
+  // Debug: Log entry values
+  dbg(`[EXIT][DEBUG] manageExit started for ${mintStr}, entryPrice=${pos.entryPrice}, entryUsd=${pos.costSol}, entryLiquidityUsd=${pos.entryLiquidityUsd || 0}`);
   
   // Guard: skip TP/TSL if invalid entry price
   if (!isValidPrice(pos.entryPrice)) {
-    if (DEBUG_TX) console.log('[PAPER][DBG] skip TP/TSL: invalid entryPrice', { mint: mintStr, entryPrice: pos.entryPrice });
+    dbg(`[EXIT][DEBUG] skip TP/TSL: invalid entryPrice for ${mintStr}`, { entryPrice: pos.entryPrice, isValid: isValidPrice(pos.entryPrice) });
     return;
   }
 
@@ -2615,6 +2621,9 @@ async function manageExit(mintStr: string) {
     
     await new Promise((r) => setTimeout(r, pollInterval));
     const price = await getQuotePrice(pos.mint);
+    
+    // Debug: Log price fetch
+    dbg(`[EXIT][DEBUG] price=${price}, high=${pos.highPrice}, entry=${pos.entryPrice}, mint=${short(mintStr)}`);
     
     // Record price fetch result for health monitoring
     if (!price || !isValidPrice(price)) {
