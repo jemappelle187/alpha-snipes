@@ -2425,24 +2425,53 @@ async function executeCopyTradeFromSignal(opts: {
     // Store entry liquidity for monitoring (use 0 if unknown - we'll skip liquidity drop detection in that case)
     const entryLiquidity = typeof liquidityUsd === 'number' ? liquidityUsd : 0;
     
-    // Determine position mode: tiny_entry only for actual probe positions (small size + unknown liquidity)
+    // Determine position mode: tiny_entry only for actual probe positions (small size + unknown liquidity/price)
     // Watchlist auto-buys and force-buys always use 'normal' mode when liquidity is known
     const TINY_ENTRY_MAX_SOL = 0.01; // Only positions < 0.01 SOL can be tiny_entry
-    const liquidityUnknown = typeof liquidityUsd !== 'number';
     
-    // For watchlist auto-buys: we've already validated liquidity is good, so force normal mode
-    // For force-buy: always normal mode (handled separately)
-    // For alpha signals: only tiny_entry if BOTH conditions: small size AND unknown liquidity (fail-open path)
+    // 1) Liquidity flags
+    const liquidityKnown = liq.ok && typeof liquidityUsd === 'number' && Number.isFinite(liquidityUsd);
+    const liquidityUsdValue = liquidityKnown ? liquidityUsd! : undefined;
+    const liquidityUnknown = !liquidityKnown;
+    
+    // 2) Price flags
+    const priceKnown = typeof finalEntryPrice === 'number' && Number.isFinite(finalEntryPrice) && finalEntryPrice > 0;
+    const isTinyPrice = priceKnown && finalEntryPrice < 1e-9;
+    
+    // 3) Mode decision
     let positionMode: PositionMode;
+    
     if (source === 'watchlist') {
       // Watchlist auto-buys have passed liquidity/volume checks - always normal
       positionMode = 'normal';
       dbg(`[ENTRY][WATCHLIST] opening position mint=${short(mintStr)} sizeSol=${buySol} entryPrice=${finalEntryPrice.toExponential(3)} liquidityUsd=${liquidityUsd} mode=${positionMode} (forced normal - liquidity validated)`);
+    } else if (source === 'alpha') {
+      // Alpha signals: use normal mode if we have good liquidity AND valid price
+      const hasGoodLiquidity = liquidityKnown && liquidityUsdValue! >= MIN_LIQUIDITY_USD_ALPHA;
+      
+      // RULES:
+      // - If we have good liquidity AND a usable, non-tiny price → NORMAL
+      // - TINY_ENTRY only when BOTH:
+      //     a) buySol < 0.01 SOL, AND
+      //     b) (liquidityUnknown OR !priceKnown OR isTinyPrice)
+      if (hasGoodLiquidity && priceKnown && !isTinyPrice) {
+        positionMode = 'normal';
+      } else if (buySol < TINY_ENTRY_MAX_SOL && (liquidityUnknown || !priceKnown || isTinyPrice)) {
+        positionMode = 'tiny_entry';
+      } else {
+        // fallback: if it passed all guards, prefer normal mode
+        positionMode = 'normal';
+      }
+      
+      dbg(
+        `[ENTRY][ALPHA] opening position mint=${short(mintStr)} sizeSol=${buySol} liquidityUsd=${
+          liquidityKnown ? liquidityUsdValue!.toFixed(0) : 'unknown'
+        } entryPrice=${priceKnown ? finalEntryPrice.toExponential(3) : 'unknown'} mode=${positionMode}`
+      );
     } else {
-      // Alpha signals: only tiny_entry for actual probe positions (fail-open path)
-      const isTinyProbe = buySol < TINY_ENTRY_MAX_SOL && liquidityUnknown;
-      positionMode = isTinyProbe ? 'tiny_entry' : 'normal';
-      dbg(`[ENTRY] Position mode: ${positionMode} | sizeSol=${buySol} | liquidityUnknown=${liquidityUnknown}`);
+      // Fallback for any other source (shouldn't happen, but default to normal)
+      positionMode = 'normal';
+      dbg(`[ENTRY] Position mode: ${positionMode} | sizeSol=${buySol} | source=${source}`);
     }
     
     openPositions[mintStr] = {
