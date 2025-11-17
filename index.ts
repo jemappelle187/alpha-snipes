@@ -2312,6 +2312,7 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
       // Debug log before sending
       dbg(`[ALPHA][CANDIDATE] wallet=${short(signer)} mint=${short(mint)} solSpent=${solSpent} txType=${txTypeLabel} liq=${liqDisplay} ageSec=${signalAgeSec}`);
       
+      const tag = IS_PAPER ? '[PAPER] ' : '';
       await alert(
         `${tag}🧪 <b>${signalLabel}</b>\n` +
           `Wallet: <code>${short(signer)}</code>\n` +
