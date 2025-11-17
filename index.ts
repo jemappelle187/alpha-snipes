@@ -1251,40 +1251,53 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
   try {
     const mintPk = new PublicKey(mintStr);
     
-    // Step 1: Fetch current price with detailed error logging
-    dbg(`[FORCE_BUY] Fetching price for ${short(mintStr)}`);
-    const currentPrice = await getQuotePrice(mintPk);
-    
-    if (!currentPrice || !isValidPrice(currentPrice)) {
-      // Get detailed error from Jupiter
-      const SOL = 'So11111111111111111111111111111111111111112';
-      let jupiterError = 'Unknown error';
-      try {
-        // Try to get a quote to see the actual error
-        await getJupiterQuote(mintStr, SOL, 1_000_000, 1000);
-      } catch (e: any) {
-        jupiterError = e?.message || String(e);
-      }
-      
-      await sendCommand(
-        msg.chat.id,
-        `❌ Could not fetch current price for <code>${short(mintStr)}</code>\n\n` +
-        `Jupiter error: <code>${jupiterError}</code>\n\n` +
-        `Possible reasons:\n` +
-        `• Token not yet indexed by Jupiter\n` +
-        `• No valid DEX route available\n` +
-        `• Token still in bonding curve (pump.fun Instant phase)\n` +
-        `• Insufficient liquidity for routing\n\n` +
-        `Check logs with: <code>grep "${short(mintStr)}" logs/bot_*.log | grep "\\[PRICE\\]"</code>`
-      );
-      return;
-    }
-    
-    // Step 2: Check liquidity
-    const liquidity = await getLiquidityResilient(mintStr);
-    const liquidityUsd = liquidity.ok && liquidity.liquidityUsd ? liquidity.liquidityUsd : 0;
+    // Step 1: Fetch liquidity FIRST (triangulated) - this will be used in the message
+    dbg(`[FORCE_BUY] Fetching triangulated liquidity for ${short(mintStr)}`);
+    const liquidity = await getLiquidityResilient(mintStr, { retries: 2, cacheMaxAgeMs: 5_000 });
+    const liquidityUsd = liquidity.ok && typeof liquidity.liquidityUsd === 'number' ? liquidity.liquidityUsd : 0;
+    const liquiditySource = liquidity.source || 'unknown';
     const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
     const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+    
+    dbg(`[ENTRY][DEBUG] Liquidity provider results: source=${liquiditySource}, liquidityUsd=${liquidityUsd}, ok=${liquidity.ok}`);
+    
+    // Step 2: Fetch current price with triangulation fallback
+    dbg(`[FORCE_BUY] Fetching price for ${short(mintStr)} (with triangulation fallback)`);
+    let currentPrice = await getQuotePrice(mintPk);
+    
+    // If price fetch failed, try using liquidity price as fallback
+    if (!currentPrice || !isValidPrice(currentPrice)) {
+      dbg(`[ENTRY][DEBUG] Primary price fetch failed, trying liquidity price fallback`);
+      if (liquidity.priceSol && isValidPrice(liquidity.priceSol)) {
+        currentPrice = liquidity.priceSol;
+        dbg(`[ENTRY][DEBUG] Using liquidity price fallback: ${currentPrice.toExponential(3)} SOL/token`);
+      } else {
+        // Get detailed error from Jupiter
+        const SOL = 'So11111111111111111111111111111111111111112';
+        let jupiterError = 'Unknown error';
+        try {
+          // Try to get a quote to see the actual error
+          await getJupiterQuote(mintStr, SOL, 1_000_000, 1000);
+        } catch (e: any) {
+          jupiterError = e?.message || String(e);
+        }
+        
+        await sendCommand(
+          msg.chat.id,
+          `❌ Could not fetch current price for <code>${short(mintStr)}</code>\n\n` +
+          `Jupiter error: <code>${jupiterError}</code>\n\n` +
+          `Possible reasons:\n` +
+          `• Token not yet indexed by Jupiter\n` +
+          `• No valid DEX route available\n` +
+          `• Token still in bonding curve (pump.fun Instant phase)\n` +
+          `• Insufficient liquidity for routing\n\n` +
+          `Check logs with: <code>grep "${short(mintStr)}" logs/bot_*.log | grep "\\[PRICE\\]"</code>`
+        );
+        return;
+      }
+    }
+    
+    dbg(`[ENTRY][DEBUG] Price after triangulation: ${currentPrice.toExponential(3)} SOL/token`);
     
     // Step 3: Determine buy amount
     const buySol = customAmount || BUY_SOL;
@@ -1301,7 +1314,19 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     // Step 5: Calculate ACTUAL entry price from swap result (not quote price)
     // Entry price = SOL spent / tokens received
     const actualEntryPrice = tokenAmount > 0 ? buySol / tokenAmount : currentPrice;
-    const finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : currentPrice;
+    const finalEntryPrice = isValidPrice(actualEntryPrice) ? actualEntryPrice : (isValidPrice(currentPrice) ? currentPrice : 0);
+    
+    dbg(`[ENTRY][DEBUG] Entry price calculation: actualEntryPrice=${actualEntryPrice.toExponential(3)}, currentPrice=${currentPrice?.toExponential(3) || 'null'}, finalEntryPrice=${finalEntryPrice.toExponential(3)}`);
+    
+    // Check if this should be tiny-entry mode
+    const TINY_ENTRY_THRESHOLD = 1e-9;
+    const isTinyEntry = finalEntryPrice < TINY_ENTRY_THRESHOLD;
+    const tinyEntryReason = isTinyEntry ? 
+      (finalEntryPrice === 0 ? 'entryPrice is 0 (price fetch failed)' : 
+       `entryPrice=${finalEntryPrice.toExponential(3)} < ${TINY_ENTRY_THRESHOLD.toExponential(3)}`) : 
+      'normal entry';
+    
+    dbg(`[ENTRY][DEBUG] Tiny-entry mode? ${isTinyEntry} | reason=${tinyEntryReason}`);
     
     // Step 6: Create position with actual entry price
     const pos: LivePosition = {
@@ -1312,19 +1337,23 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
       costSol: buySol,
       alpha: 'force_buy',
       highPrice: finalEntryPrice,
+      entryLiquidityUsd: typeof liquidityUsd === 'number' ? liquidityUsd : 0,
     };
     openPositions[mintStr] = pos;
     persistPositions();
     
-    // Step 7: Send notifications with actual entry price
+    // Step 7: Send notifications with triangulated liquidity and actual entry price
     const tag = '[PAPER] ';
     const entryPriceUsd = finalEntryPrice * (solUsd || 0);
+    const liquiditySourceLabel = liquiditySource === 'birdeye' ? ' (Birdeye)' : liquiditySource === 'dexscreener' ? ' (DexScreener)' : '';
+    const poolInfo = liquidity.pairAddress ? `\nPool: ${short(liquidity.pairAddress)}${liquiditySourceLabel}` : '';
+    
     await tgQueue.enqueue(() => bot.sendMessage(
       TELEGRAM_CHAT_ID,
       `${tag}🔨 Force buy: <b>${tokenDisplay}</b>\n` +
       `Entry: ${formatSol(finalEntryPrice)}${solUsd ? ` (~${formatUsd(entryPriceUsd)})` : ''}\n` +
       `Size: ${formatSol(buySol)}${solUsd ? ` (~${formatUsd(entryUsd)})` : ''}\n` +
-      `Liquidity: ${formatUsd(liquidityUsd)}\n` +
+      `Liquidity: ${formatUsd(liquidityUsd)}${liquiditySourceLabel}${poolInfo}\n` +
       `Tokens: ${tokenAmount.toLocaleString()}`,
       linkRow({ mint: mintStr, alpha: 'force_buy', tx: tx.txid, chartUrl })
     ), { chatId: TELEGRAM_CHAT_ID });
@@ -2617,11 +2646,15 @@ async function manageExit(mintStr: string) {
 
   // Special handling for extremely small entry prices (< 1e-9)
   // These occur when tokens have massive supply and tiny decimals, causing price ratio calculations to explode
+  // ONLY use tiny-entry mode if entryPrice is truly tiny AND we have a valid price (not null/0 from failed fetch)
   const TINY_ENTRY_THRESHOLD = 1e-9;
-  const useTinyEntryMode = pos.entryPrice < TINY_ENTRY_THRESHOLD;
+  const hasValidEntryPrice = isValidPrice(pos.entryPrice) && pos.entryPrice > 0;
+  const useTinyEntryMode = hasValidEntryPrice && pos.entryPrice < TINY_ENTRY_THRESHOLD;
   
   if (useTinyEntryMode) {
     dbg(`[EXIT] Entry price extremely small (${pos.entryPrice.toExponential(3)}) for ${short(mintStr)} — switching to absolute-price exit mode`);
+  } else if (!hasValidEntryPrice) {
+    dbg(`[EXIT] Entry price invalid (${pos.entryPrice}) for ${short(mintStr)} - this should not happen for normal entries. Price fetch may have failed during entry.`);
   }
 
   // Simple exit strategy: auto-close at +20% (no early TP or trailing stop)
