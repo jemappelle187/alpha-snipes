@@ -418,6 +418,55 @@ function canPaperBuy(key: string, ms = 60_000): boolean {
   return true;
 }
 
+// Classify transaction type from parsed transaction
+function classifyTxType(tx: ParsedTransactionWithMeta | null): string {
+  if (!tx || !tx.meta || !tx.transaction) return 'unknown';
+  
+  const instructions = tx.transaction.message?.instructions || [];
+  const programIds = new Set<string>();
+  
+  for (const ix of instructions) {
+    if ('programId' in ix && ix.programId) {
+      programIds.add(ix.programId.toString());
+    }
+  }
+  
+  // Check for common DEX programs
+  const RAYDIUM_PROGRAM = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
+  const ORCA_PROGRAM = '9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP';
+  const JUPITER_PROGRAM = 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
+  const METEORA_PROGRAM = 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB';
+  
+  if (programIds.has(JUPITER_PROGRAM)) return 'swap (Jupiter)';
+  if (programIds.has(RAYDIUM_PROGRAM)) return 'swap (Raydium)';
+  if (programIds.has(ORCA_PROGRAM)) return 'swap (Orca)';
+  if (programIds.has(METEORA_PROGRAM)) return 'swap (Meteora)';
+  
+  // Check for liquidity pool operations
+  const hasLiquidityOps = Array.from(programIds).some(id => 
+    id.includes('pool') || id.includes('liquidity') || id.includes('amm')
+  );
+  if (hasLiquidityOps) return 'liquidity_op';
+  
+  // Check for token program (transfers)
+  const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  if (programIds.has(TOKEN_PROGRAM) && programIds.size === 1) return 'transfer';
+  
+  // Check for system program (SOL transfers)
+  const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+  if (programIds.has(SYSTEM_PROGRAM) && programIds.size === 1) return 'transfer';
+  
+  return 'other';
+}
+
+// Format time duration (e.g., "2m", "1h", "30s")
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
 // Dynamic Alpha Management
 let ACTIVE_ALPHAS: string[] = [];
 let CANDIDATE_ALPHAS: string[] = [];
@@ -2182,11 +2231,60 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
     if (label === 'candidate') {
       bumpScore(signer);
       const promoted = maybePromote(signer, PROMOTION_THRESHOLD, PROMOTION_WINDOW_MS);
+      
+      // Classify signal type based on SOL spent
+      const DUST_SOL = DUST_SOL_SPENT;
+      let signalLabel: string;
+      let solLine: string;
+      
+      if (signal.solSpent >= DUST_SOL) {
+        // Real buy
+        signalLabel = 'Candidate BUY signal';
+        solLine = `Sol spent: <code>${formatSol(signal.solSpent)}</code> SOL`;
+      } else if (signal.solSpent > 0) {
+        // Tiny dust - treat as "touch"
+        signalLabel = 'Candidate TOUCH (dust)';
+        solLine = `Sol spent: <code>&lt;${formatSol(DUST_SOL)}</code> SOL (dust touch)`;
+      } else {
+        // 0 or unknown - non-swap / pool / route
+        signalLabel = 'Candidate TOUCH (no swap)';
+        solLine = `Sol spent: <code>0</code> SOL (no swap in this tx)`;
+      }
+      
+      // Get transaction type (try to get from stored tx if available)
+      const txType = classifyTxType(null); // We don't have parsed tx here, will use 'unknown' for now
+      
+      // Calculate mint age and signal age
+      const signalAgeSec = signal.signalAgeSec ?? 0;
+      const signalAge = formatDuration(signalAgeSec);
+      
+      // Mint age: approximate from first seen (we don't track this precisely, so use signal age as proxy)
+      // For now, we'll show signal age only, mint age would require tracking firstSeenAt per mint
+      const mintAge = signalAge; // Approximate: use signal age as proxy
+      
+      // Try to get quick liquidity snapshot (non-blocking)
+      let liquidityLine = '';
+      try {
+        const liquidity = await Promise.race([
+          getLiquidityResilient(mint, { retries: 1, cacheMaxAgeMs: 300_000 }),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)) // 2s timeout
+        ]);
+        
+        if (liquidity && liquidity.ok && typeof liquidity.liquidityUsd === 'number') {
+          const vol24h = liquidity.volume24h ?? 0;
+          liquidityLine = `\nLiquidity: <code>${formatUsd(liquidity.liquidityUsd)}</code> · 24h Vol: <code>${formatUsd(vol24h)}</code>`;
+        }
+      } catch (err) {
+        // Silently fail - don't block the alert
+      }
+      
       await alert(
-        `🧪 <b>Candidate BUY signal</b>\n` +
+        `🧪 <b>${signalLabel}</b>\n` +
           `Wallet: <code>${short(signer)}</code>\n` +
           `Mint: <code>${short(mint)}</code>\n` +
-          `Sol spent: <code>${signal.solSpent.toFixed(4)}</code>\n` +
+          `${solLine}\n` +
+          `Type: <code>${txType}</code>\n` +
+          `Signal age: <code>${signalAge}</code>${liquidityLine}\n` +
           `TX: <code>${sig.slice(0, 8)}...</code>${promoted ? '\n\n✅ <b>AUTO-PROMOTED to active!</b>' : ''}`
       );
       if (promoted) {
