@@ -2884,6 +2884,7 @@ async function manageExit(mintStr: string) {
               tx: tx.txid,
             });
             
+            dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=liquidity_drop | pnl=${pnlPct.toFixed(1)}%`);
             delete openPositions[mintStr];
             savePositions(serializeLivePositions(openPositions));
             return;
@@ -2942,14 +2943,15 @@ async function manageExit(mintStr: string) {
             tx: tx.txid,
           });
           
-          delete openPositions[mintStr];
-          savePositions(serializeLivePositions(openPositions));
-          return;
-        } catch (err: any) {
-          const result = await handleExitError(err, mintStr, pos, 'crashed');
-          if (result === 'removed') return;
-          continue; // Retry on next iteration
-        }
+            dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=crashed_token | pnl=${pnlPct.toFixed(1)}%`);
+            delete openPositions[mintStr];
+            savePositions(serializeLivePositions(openPositions));
+            return;
+          } catch (err: any) {
+            const result = await handleExitError(err, mintStr, pos, 'crashed');
+            if (result === 'removed') return;
+            continue; // Retry on next iteration
+          }
       } else {
         // Price is unreliable but not extreme - skip max loss check but continue monitoring
         dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${pos.entryPrice.toExponential(3)}, current: ${price.toExponential(3)})`);
@@ -2997,6 +2999,7 @@ async function manageExit(mintStr: string) {
           tx: tx.txid,
         });
         
+        dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=max_loss | pnl=${currentLossPct.toFixed(1)}%`);
         delete openPositions[mintStr];
         savePositions(serializeLivePositions(openPositions));
         return;
@@ -3076,6 +3079,7 @@ async function manageExit(mintStr: string) {
           tx: tx.txid,
         });
         
+        dbg(`[EXIT] Position closed for ${short(mintStr)} | reason=hard_profit_50pct | pnl=${pnlPct.toFixed(1)}%`);
         delete openPositions[mintStr];
         savePositions(serializeLivePositions(openPositions));
         return;
