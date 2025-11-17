@@ -75,6 +75,7 @@ pm2 startup
 | [**Config Reference**](docs/CONFIG_REFERENCE.md) | Everyone | All environment variables explained |
 | [**Troubleshooting**](docs/TROUBLESHOOTING.md) | Support | Common issues and solutions |
 | [**Oracle Deploy**](docs/ORACLE_DEPLOY.md) | DevOps | VPS deployment step-by-step |
+| [**Verification Checklist**](VERIFICATION_CHECKLIST.md) | Operators | Post-deployment verification guide |
 | [**Changelog**](docs/CHANGELOG.md) | Everyone | Version history and updates |
 | [**Security Notes**](docs/SECURITY_NOTES.md) | Operators | Wallet safety and risk disclosure |
 
@@ -197,6 +198,55 @@ Follow [docs/ORACLE_DEPLOY.md](docs/ORACLE_DEPLOY.md) for 24/7 operation.
 
 ### 5. Go Live (Optional)
 Only after paper mode success and understanding all features.
+
+---
+
+## ✅ Smoke Test & Verification
+
+After deployment or updates, verify all bot functionality is working correctly.
+
+### Quick Verification
+
+Run the automated verification script:
+
+```bash
+# On your VPS
+cd ~/Alpha\ Snipes
+./tools/verify_bot.sh alpha-snipes-paper 500
+```
+
+This checks:
+- ✅ Config & startup sanity
+- ✅ Entry paths (alpha, watchlist, force-buy)
+- ✅ Entry-price robustness (no zero prices)
+- ✅ Liquidity triangulation
+- ✅ Exit behavior (+20% TP, max loss, etc.)
+- ✅ Error & regression checks
+
+### Manual Verification
+
+For detailed manual checks, see **[VERIFICATION_CHECKLIST.md](VERIFICATION_CHECKLIST.md)**.
+
+**Quick manual checks:**
+```bash
+# 1. Check config on startup
+pm2 logs alpha-snipes-paper --lines 50 | grep -E "\[CONFIG\]|Bot Started"
+
+# 2. Check recent entries (should show non-zero entry prices)
+pm2 logs alpha-snipes-paper --lines 100 | grep -E "\[ENTRY\]\[OPEN\]|Entry Price:"
+
+# 3. Check for errors
+pm2 logs alpha-snipes-paper --lines 500 | grep -E "\[ENTRY\]\[PRICE\]\[FATAL\]|Cannot access|Entry: 0 SOL"
+
+# 4. Check exits
+pm2 logs alpha-snipes-paper --lines 100 | grep -E "\[EXIT\].*Position closed"
+```
+
+**Expected results:**
+- ✅ No "Entry: 0 SOL" messages
+- ✅ All entry prices calculated from swap amounts
+- ✅ No "Cannot access 'priceRatio'" errors
+- ✅ Exit logs show proper reasons (hard_profit_20pct, max_loss, etc.)
 
 ---
 
