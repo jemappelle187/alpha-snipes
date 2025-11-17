@@ -3645,6 +3645,7 @@ async function main() {
     console.log(`⚠️  Helius RPC URL detected but no API key found`);
   }
   console.log(`📍 Wallet: ${walletKeypair.publicKey.toBase58()}`);
+  console.log(`[CONFIG] BUY_SOL = ${BUY_SOL} SOL (forced for all flows)`);
   console.log(`💰 Buy size: ${BUY_SOL} SOL`);
   console.log(`🎯 Early TP: ${EARLY_TP_PCT * 100}%${PARTIAL_TP_PCT > 0 ? ` (Partial: ${PARTIAL_TP_PCT * 100}%)` : ''}`);
   console.log(`🛑 Trailing stop: ${TRAIL_STOP_PCT * 100}%`);
