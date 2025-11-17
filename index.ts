@@ -2833,6 +2833,10 @@ async function manageExit(mintStr: string) {
     return;
   }
   
+  // Declare priceRatio at the top to avoid "Cannot access before initialization" errors
+  // It will be calculated when we have valid prices
+  let priceRatio: number | null = null;
+  
   // Debug: Log entry values
   dbg(`[EXIT][DEBUG] manageExit started for ${mintStr}, entryPrice=${pos.entryPrice}, entryUsd=${pos.costSol}, entryLiquidityUsd=${pos.entryLiquidityUsd || 0}`);
   
@@ -3130,10 +3134,17 @@ async function manageExit(mintStr: string) {
       }
     }
     
+    // Calculate priceRatio early if we have valid prices (used for multiple checks)
+    if (isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0) {
+      const hi = Math.max(price, pos.entryPrice);
+      const lo = Math.min(price, pos.entryPrice);
+      priceRatio = hi / lo;
+    }
+    
     // Note: Price ratio check was already done above for milestone calculations
     // This check is for crashed token detection (different threshold)
-    const priceRatioForCrash = Math.max(price / pos.entryPrice, pos.entryPrice / price);
-    const priceDropFromEntryPct = ((pos.entryPrice - price) / pos.entryPrice) * 100;
+    const priceRatioForCrash = priceRatio !== null ? priceRatio : Math.max(price / pos.entryPrice, pos.entryPrice / price);
+    const priceDropFromEntryPct = priceRatio !== null && pos.entryPrice > 0 ? ((pos.entryPrice - price) / pos.entryPrice) * 100 : 0;
     
     if (priceRatioForCrash > 10) {
       // If price is extremely unreliable (>15x difference), likely token crashed - force exit
@@ -3157,7 +3168,7 @@ async function manageExit(mintStr: string) {
           await tgQueue.enqueue(() => bot.sendMessage(
             TELEGRAM_CHAT_ID,
             `💀 Crashed token auto-exit: <b>${tokenDisplay}</b>\n` +
-            `Price unreliable (${priceRatio.toFixed(0)}x off) - likely crashed. Forcing exit.`,
+            `Price unreliable (${priceRatioForCrash.toFixed(0)}x off) - likely crashed. Forcing exit.`,
             linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
           ), { chatId: TELEGRAM_CHAT_ID });
           
@@ -3187,7 +3198,7 @@ async function manageExit(mintStr: string) {
           }
       } else {
         // Price is unreliable but not extreme - skip max loss check but continue monitoring
-        dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${pos.entryPrice.toExponential(3)}, current: ${price.toExponential(3)})`);
+        dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio !== null ? priceRatio.toFixed(1) + 'x' : 'n/a'}, entry: ${pos.entryPrice.toExponential(3)}, current: ${price.toExponential(3)})`);
         continue; // Skip this iteration, wait for next price check
       }
     }
@@ -3246,8 +3257,14 @@ async function manageExit(mintStr: string) {
     if (price > pos.highPrice) pos.highPrice = price;
     
     // Sanity check: Don't use unreliable prices for gain calculations
-    const priceRatio = Math.max(price / pos.entryPrice, pos.entryPrice / price);
-    if (priceRatio > 10) {
+    // priceRatio was already calculated above, but recalculate if null
+    if (priceRatio === null && isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0) {
+      const hi = Math.max(price, pos.entryPrice);
+      const lo = Math.min(price, pos.entryPrice);
+      priceRatio = hi / lo;
+    }
+    
+    if (priceRatio !== null && priceRatio > 10) {
       // Price is unreliable - skip milestone and profit calculations
       dbg(`[EXIT] Skipping milestone/profit calculations for ${short(mintStr)}: price unreliable (ratio: ${priceRatio.toFixed(1)}x, entry=${pos.entryPrice.toExponential(3)}, current=${price.toExponential(3)})`);
       continue;
