@@ -2235,59 +2235,92 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
       bumpScore(signer);
       const promoted = maybePromote(signer, PROMOTION_THRESHOLD, PROMOTION_WINDOW_MS);
       
+      // Get actual SOL spent from signal (use the value from classification, not placeholder)
+      const solSpent = signal.solSpent || 0;
+      
       // Classify signal type based on SOL spent
       const DUST_SOL = DUST_SOL_SPENT;
       let signalLabel: string;
       let solLine: string;
       
-      if (signal.solSpent >= DUST_SOL) {
-        // Real buy
+      if (solSpent >= 0.0001) {
+        // Real buy - show with 4 decimals
         signalLabel = 'Candidate BUY signal';
-        solLine = `Sol spent: <code>${formatSol(signal.solSpent)}</code> SOL`;
-      } else if (signal.solSpent > 0) {
-        // Tiny dust - treat as "touch"
+        solLine = `Sol spent: <code>${solSpent.toFixed(4)}</code> SOL`;
+      } else if (solSpent > 0) {
+        // Tiny dust - never round to 0.0000
         signalLabel = 'Candidate TOUCH (dust)';
-        solLine = `Sol spent: <code>&lt;${formatSol(DUST_SOL)}</code> SOL (dust touch)`;
+        solLine = `Sol spent: <code>&lt;0.0001</code> SOL (dust touch)`;
       } else {
-        // 0 or unknown - non-swap / pool / route
+        // 0 or unknown - no SOL spend (pure mint/transfer)
         signalLabel = 'Candidate TOUCH (no swap)';
         solLine = `Sol spent: <code>0</code> SOL (no swap in this tx)`;
       }
       
-      // Transaction type already classified above
+      // Derive transaction type label (more specific than classifyTxType)
+      let txTypeLabel = txType;
+      if (txType === 'swap (Jupiter)' || txType === 'swap (Raydium)' || txType === 'swap (Orca)' || txType === 'swap (Meteora)') {
+        txTypeLabel = 'BUY';
+      } else if (txType === 'liquidity_op') {
+        txTypeLabel = 'ADD_LP';
+      } else if (txType === 'transfer') {
+        txTypeLabel = 'TRANSFER';
+      } else if (txType === 'unknown' || txType === 'other') {
+        // Try to infer from token delta
+        if (signal.tokenDelta > 0 && solSpent === 0) {
+          txTypeLabel = 'MINT';
+        } else {
+          txTypeLabel = 'UNKNOWN';
+        }
+      }
       
-      // Calculate mint age and signal age
+      // Calculate age: now - blockTime (in seconds)
       const signalAgeSec = signal.signalAgeSec ?? 0;
-      const signalAge = formatDuration(signalAgeSec);
+      const ageDisplay = signalAgeSec < 60 
+        ? `${Math.floor(signalAgeSec)}s ago`
+        : signalAgeSec < 3600
+        ? `${Math.floor(signalAgeSec / 60)}m ago`
+        : `${Math.floor(signalAgeSec / 3600)}h ago`;
       
-      // Mint age: approximate from first seen (we don't track this precisely, so use signal age as proxy)
-      // For now, we'll show signal age only, mint age would require tracking firstSeenAt per mint
-      const mintAge = signalAge; // Approximate: use signal age as proxy
-      
-      // Try to get quick liquidity snapshot (non-blocking)
+      // Try to get quick liquidity snapshot (non-blocking, 2s timeout)
       let liquidityLine = '';
+      let liqDisplay = 'unknown';
       try {
         const liquidity = await Promise.race([
           getLiquidityResilient(mint, { retries: 1, cacheMaxAgeMs: 300_000 }),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)) // 2s timeout
         ]);
         
-        if (liquidity && liquidity.ok && typeof liquidity.liquidityUsd === 'number') {
+        if (liquidity && liquidity.ok && typeof liquidity.liquidityUsd === 'number' && liquidity.liquidityUsd > 0) {
           const vol24h = liquidity.volume24h ?? 0;
-          liquidityLine = `\nLiquidity: <code>${formatUsd(liquidity.liquidityUsd)}</code> · 24h Vol: <code>${formatUsd(vol24h)}</code>`;
+          const sourceLabel = liquidity.source ? ` (${liquidity.source})` : '';
+          liqDisplay = formatUsd(liquidity.liquidityUsd);
+          liquidityLine = `\nLiquidity: <code>${formatUsd(liquidity.liquidityUsd)}</code>${sourceLabel}`;
+          if (vol24h > 0) {
+            liquidityLine += `\n24h Volume: <code>${formatUsd(vol24h)}</code>`;
+          }
+        } else {
+          liqDisplay = 'unknown';
+          liquidityLine = `\nLiquidity: <code>unknown</code>`;
         }
       } catch (err) {
         // Silently fail - don't block the alert
+        liqDisplay = 'unknown';
+        liquidityLine = `\nLiquidity: <code>unknown</code>`;
       }
       
+      // Debug log before sending
+      dbg(`[ALPHA][CANDIDATE] wallet=${short(signer)} mint=${short(mint)} solSpent=${solSpent} txType=${txTypeLabel} liq=${liqDisplay} ageSec=${signalAgeSec}`);
+      
       await alert(
-        `🧪 <b>${signalLabel}</b>\n` +
+        `${tag}🧪 <b>${signalLabel}</b>\n` +
           `Wallet: <code>${short(signer)}</code>\n` +
           `Mint: <code>${short(mint)}</code>\n` +
+          `Tx type: <code>${txTypeLabel}</code>\n` +
           `${solLine}\n` +
-          `Type: <code>${txType}</code>\n` +
-          `Signal age: <code>${signalAge}</code>${liquidityLine}\n` +
-          `TX: <code>${sig.slice(0, 8)}...</code>${promoted ? '\n\n✅ <b>AUTO-PROMOTED to active!</b>' : ''}`
+          `Age: <code>${ageDisplay}</code>${liquidityLine}\n` +
+          `TX: <code>${short(sig)}</code>\n` +
+          `\nStatus: <i>Candidate only (no copy trade yet)</i>${promoted ? '\n\n✅ <b>AUTO-PROMOTED to active!</b>' : ''}`
       );
       if (promoted) {
         refreshAlphas();
