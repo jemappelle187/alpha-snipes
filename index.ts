@@ -3688,7 +3688,7 @@ async function main() {
   // Get version from package.json (synchronous read)
   let botVersion = '1.0.0';
   try {
-    const pkgContent = fs.readFileSync('./package.json', 'utf-8');
+    const pkgContent = fs.readFileSync(new URL('./package.json', import.meta.url), 'utf-8');
     const pkg = JSON.parse(pkgContent);
     botVersion = pkg.version || '1.0.0';
   } catch {
