@@ -2181,6 +2181,9 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
     return;
   }
 
+  // Classify transaction type once for all signals
+  const txType = classifyTxType(tx);
+
   for (const signal of signals) {
     const mint = signal.mint;
     if (seenMints.has(mint)) {
@@ -2251,8 +2254,7 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
         solLine = `Sol spent: <code>0</code> SOL (no swap in this tx)`;
       }
       
-      // Get transaction type (try to get from stored tx if available)
-      const txType = classifyTxType(null); // We don't have parsed tx here, will use 'unknown' for now
+      // Transaction type already classified above
       
       // Calculate mint age and signal age
       const signalAgeSec = signal.signalAgeSec ?? 0;
