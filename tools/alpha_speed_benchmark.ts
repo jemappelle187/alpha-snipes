@@ -58,9 +58,21 @@ function parseBenchmarkLine(line: string): BenchmarkSample | null {
 
 async function main() {
   const samples: BenchmarkSample[] = [];
-  const input = process.argv[2] 
-    ? fs.createReadStream(process.argv[2])
-    : process.stdin;
+  
+  // Support both file argument and stdin
+  let input: NodeJS.ReadableStream;
+  if (process.argv[2]) {
+    // File path provided
+    const filePath = process.argv[2];
+    if (!fs.existsSync(filePath)) {
+      console.error(`Error: File not found: ${filePath}`);
+      process.exit(1);
+    }
+    input = fs.createReadStream(filePath);
+  } else {
+    // Read from stdin
+    input = process.stdin;
+  }
   
   const rl = readline.createInterface({
     input,
