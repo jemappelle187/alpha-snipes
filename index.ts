@@ -37,7 +37,7 @@ import { linkRow } from './lib/telegram_helpers.js';
 import { tgQueue } from './lib/telegram_rate.js';
 import { recordTrade, readTrades, summarize } from './lib/ledger.js';
 import { explainSkip } from './lib/explain.js';
-import { getLiquidityResilient } from './lib/liquidity.js';
+import { getLiquidityResilient, fetchGmgnSafety } from './lib/liquidity.js';
 import { swapWithDEXFallback } from './lib/dex_fallbacks.js';
 import { computePositionSize } from './lib/position_sizing.js';
 import {
@@ -130,6 +130,8 @@ const MAX_SIGNAL_AGE_SEC = parseInt(process.env.MAX_SIGNAL_AGE_SEC || '300', 10)
 const MAX_ALPHA_ENTRY_MULTIPLIER = parseFloat(process.env.MAX_ALPHA_ENTRY_MULTIPLIER || '2');
 const MIN_LIQUIDITY_USD = parseFloat(process.env.MIN_LIQUIDITY_USD || '10000');
 const MIN_LIQUIDITY_USD_ALPHA = parseFloat(process.env.MIN_LIQUIDITY_USD_ALPHA || process.env.MIN_LIQUIDITY_USD || '3000'); // Lower threshold for alpha signals
+const GMGN_MIN_HOLDERS = Number(process.env.GMGN_MIN_HOLDERS || '0');
+const GMGN_MAX_TOP10_SHARE = Number(process.env.GMGN_MAX_TOP10_SHARE || '100');
 const ENABLE_WATCHLIST = (process.env.ENABLE_WATCHLIST || 'true') === 'true';
 const WATCHLIST_CHECK_INTERVAL_MS = parseInt(process.env.WATCHLIST_CHECK_INTERVAL_MS || '30000', 10);
 const WATCHLIST_MAX_AGE_MS = parseInt(
@@ -1580,7 +1582,18 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     // Step 7: Send notifications with triangulated liquidity and actual entry price
     const tag = '[PAPER] ';
     const entryPriceUsd = finalEntryPrice * (solUsd || 0);
-    const liquiditySourceLabel = liquiditySource === 'birdeye' ? ' (Birdeye)' : liquiditySource === 'dexscreener' ? ' (DexScreener)' : '';
+    let liquiditySourceLabel = '';
+    if (liquiditySource === 'gmgn') {
+      liquiditySourceLabel = liquidity.sourceDexLabel
+        ? ` (GMGN · ${liquidity.sourceDexLabel})`
+        : ' (GMGN)';
+    } else if (liquiditySource === 'birdeye') {
+      liquiditySourceLabel = ' (Birdeye)';
+    } else if (liquiditySource === 'dexscreener') {
+      liquiditySourceLabel = liquidity.sourceDexLabel
+        ? ` (DexScreener · ${liquidity.sourceDexLabel})`
+        : ' (DexScreener)';
+    }
     const poolInfo = liquidity.pairAddress ? `\nPool: ${short(liquidity.pairAddress)}${liquiditySourceLabel}` : '';
     
     await tgQueue.enqueue(() => bot.sendMessage(
@@ -2490,7 +2503,16 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
         
         if (liquidity && liquidity.ok && typeof liquidity.liquidityUsd === 'number' && liquidity.liquidityUsd > 0) {
           const vol24h = liquidity.volume24h ?? 0;
-          const sourceLabel = liquidity.source ? ` (${liquidity.source})` : '';
+          let sourceLabel = '';
+          if (liquidity.source === 'gmgn') {
+            sourceLabel = ` (${liquidity.sourceDexLabel ? `GMGN · ${liquidity.sourceDexLabel}` : 'GMGN'})`;
+          } else if (liquidity.source === 'birdeye') {
+            sourceLabel = ' (Birdeye)';
+          } else if (liquidity.source === 'dexscreener') {
+            sourceLabel = liquidity.sourceDexLabel
+              ? ` (DexScreener · ${liquidity.sourceDexLabel})`
+              : ' (DexScreener)';
+          }
           liqDisplay = formatUsd(liquidity.liquidityUsd);
           liquidityLine = `\nLiquidity: <code>${formatUsd(liquidity.liquidityUsd)}</code>${sourceLabel}`;
           if (vol24h > 0) {
@@ -2695,6 +2717,42 @@ async function executeCopyTradeFromSignal(opts: {
       dbg(`[GUARD] Alpha entry price unavailable - proceeding without price guard`);
     }
 
+    const gmgnGuardEnabled = GMGN_MIN_HOLDERS > 0 || GMGN_MAX_TOP10_SHARE < 100;
+    if (gmgnGuardEnabled) {
+      try {
+        const gmgnSafety = await fetchGmgnSafety(mintStr);
+        if (gmgnSafety) {
+          const { holders, top10SharePct } = gmgnSafety;
+          if (holders < GMGN_MIN_HOLDERS) {
+            console.warn(
+              `[ENTRY][SKIP][GMGN] mint=${mintStr} holders=${holders} < min=${GMGN_MIN_HOLDERS}`
+            );
+            await alert(
+              `⛔️ Skipping <code>${short(mintStr)}</code>: GMGN holders ${holders} < minimum ${GMGN_MIN_HOLDERS}`
+            );
+            pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'gmgn_holders' });
+            return 'skipped';
+          }
+          if (top10SharePct > GMGN_MAX_TOP10_SHARE) {
+            console.warn(
+              `[ENTRY][SKIP][GMGN] mint=${mintStr} top10=${top10SharePct.toFixed(2)}% > max=${GMGN_MAX_TOP10_SHARE}%`
+            );
+            await alert(
+              `⛔️ Skipping <code>${short(mintStr)}</code>: GMGN top10 ${top10SharePct.toFixed(
+                2
+              )}% > maximum ${GMGN_MAX_TOP10_SHARE}%`
+            );
+            pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'gmgn_top10' });
+            return 'skipped';
+          }
+        } else {
+          console.warn(`[ENTRY][GMGN] safety data unavailable mint=${mintStr} (fail-open)`);
+        }
+      } catch (err) {
+        console.error(`[ENTRY][GMGN] safety check error mint=${mintStr}`, err);
+      }
+    }
+
     // Fixed buy size: 1 SOL for all flows (alpha, watchlist, force-buy)
     // Position sizing is bypassed - we always use BUY_SOL
     const buySol = BUY_SOL;
@@ -2759,6 +2817,20 @@ async function executeCopyTradeFromSignal(opts: {
     
     // Store entry liquidity for monitoring (use 0 if unknown - we'll skip liquidity drop detection in that case)
     const entryLiquidity = typeof liquidityUsd === 'number' ? liquidityUsd : 0;
+    let liqSourceLabel = 'Unknown';
+    if (liq?.source === 'gmgn') {
+      liqSourceLabel = liq?.sourceDexLabel ? `GMGN · ${liq.sourceDexLabel}` : 'GMGN';
+    } else if (liq?.source === 'birdeye') {
+      liqSourceLabel = 'Birdeye';
+    } else if (liq?.source === 'dexscreener') {
+      liqSourceLabel = liq?.sourceDexLabel
+        ? `DexScreener · ${liq.sourceDexLabel}`
+        : 'DexScreener';
+    }
+    const liquidityLine =
+      typeof liquidityUsd === 'number'
+        ? `\nLiquidity: ${formatUsd(liquidityUsd)} (${liqSourceLabel})`
+        : '';
     
     // Determine position mode: all entries >= 1 SOL use 'normal' mode
     // Tiny-entry mode is disabled since all flows use 1 SOL
@@ -2835,6 +2907,20 @@ async function executeCopyTradeFromSignal(opts: {
     // Use the entry price from signal if available, otherwise use calculated price
     // finalEntryPrice is guaranteed to be valid (> 0) by ensureValidEntryPrice
     const displayEntryPrice = isValidPrice(signal.alphaEntryPrice) ? signal.alphaEntryPrice : finalEntryPrice;
+    const tokensReceived = Number(qty);
+    
+    const buildMessage = (priceToDisplay: number) => {
+      const displayEntryPriceUsd = priceToDisplay * (solUsd || 0);
+      return (
+        `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
+        `Entry Price: ${formatSol(priceToDisplay)} SOL/token${
+          solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''
+        }\n` +
+        `Cost: ${formatSol(buySol)} SOL${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
+        `Tokens: ${formatTokens(tokensReceived)}` +
+        liquidityLine
+      );
+    };
     
     // Safety guard: ensure we never display 0 entry price
     if (!isValidPrice(displayEntryPrice)) {
@@ -2843,33 +2929,22 @@ async function executeCopyTradeFromSignal(opts: {
       if (!isValidPrice(fallbackPrice)) {
         throw new Error(`[ENTRY][PRICE][BUG] Both displayEntryPrice and finalEntryPrice are invalid - this should never happen`);
       }
-      const displayEntryPriceUsd = fallbackPrice * (solUsd || 0);
-      const tokensReceived = Number(qty);
       
       await tgQueue.enqueue(
         () =>
           bot.sendMessage(
-          TELEGRAM_CHAT_ID,
-            `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
-            `Entry Price: ${formatSol(fallbackPrice)} SOL/token${solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''}\n` +
-            `Cost: ${formatSol(buySol)} SOL${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
-            `Tokens: ${formatTokens(tokensReceived)}`,
+            TELEGRAM_CHAT_ID,
+            buildMessage(fallbackPrice),
             linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
           ),
         { chatId: TELEGRAM_CHAT_ID }
       );
     } else {
-      const displayEntryPriceUsd = displayEntryPrice * (solUsd || 0);
-      const tokensReceived = Number(qty);
-      
       await tgQueue.enqueue(
         () =>
           bot.sendMessage(
-          TELEGRAM_CHAT_ID,
-            `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
-            `Entry Price: ${formatSol(displayEntryPrice)} SOL/token${solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''}\n` +
-            `Cost: ${formatSol(buySol)} SOL${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
-            `Tokens: ${formatTokens(tokensReceived)}`,
+            TELEGRAM_CHAT_ID,
+            buildMessage(displayEntryPrice),
             linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
           ),
         { chatId: TELEGRAM_CHAT_ID }

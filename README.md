@@ -292,6 +292,23 @@ SECONDARY_SOLANA_RPC_URL=https://YOUR_ENDPOINT.solana-mainnet.quiknode.pro/YOUR_
 - Benchmark logs track which RPC handled each signal (`rpcPath=primary|secondary`)
 - Use the Alpha Speed Benchmark tool to compare latency and reliability between RPC combinations
 
+### GMGN Integration & Safety Guards
+
+GMGN now acts as a third liquidity provider alongside DexScreener and Birdeye.
+
+- Liquidity triangulation automatically considers GMGN pools when picking the best route.
+- Telegram entry cards show the winning provider (e.g., `Liquidity: $51.8K (GMGN · Meteora)`).
+- Optional GMGN safety checks gate entries on holder count and top-10 wallet concentration.
+
+Configure thresholds in `.env` (fail-open when unset or defaulted):
+
+```bash
+GMGN_MIN_HOLDERS=0          # Minimum unique holders required (set >0 to enforce)
+GMGN_MAX_TOP10_SHARE=100    # Maximum % held by top 10 wallets (set <100 to enforce)
+```
+
+If GMGN safety data is unavailable, the bot logs a warning and proceeds so healthy trades are not blocked by transient outages.
+
 ---
 
 ## 🔐 Security
