@@ -19,6 +19,10 @@ export function lamportsToSol(l: number | string): number {
 /** Format a number to SOL with trimmed trailing zeros */
 export function formatSol(n: number): string {
   if (!Number.isFinite(n)) return '0 SOL';
+  // For very small values (< 0.000001), use scientific notation to avoid rounding to 0
+  if (n > 0 && n < 0.000001) {
+    return `${n.toExponential(6)} SOL`;
+  }
   const s = nf.format(n);
   const trimmed = s.includes('.') ? s.replace(/\.0+$/, '').replace(/\.$/, '') : s;
   return `${trimmed} SOL`;

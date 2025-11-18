@@ -1062,8 +1062,14 @@ bot.onText(/^\/open$/, async (msg) => {
     const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
     const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : `https://dexscreener.com/solana/${mintStr}`;
     
-    // Recompute entry price if it was stored as 0
+    // Recompute entry price if it was stored as 0 (use costSol/tokens as source of truth)
     const effectiveEntry = getEffectiveEntryPrice(pos);
+    const entryPrice = effectiveEntry || pos.entryPrice;
+    
+    // Format entry price with sufficient precision for small values
+    const entryPriceFormatted = entryPrice > 0 && entryPrice < 0.000001
+      ? `${entryPrice.toExponential(6)} SOL`
+      : formatSol(entryPrice);
     
     // Try to get current price with timeout
     const currentPrice = await Promise.race([
@@ -1076,25 +1082,24 @@ bot.onText(/^\/open$/, async (msg) => {
     
     if (reliability === "unavailable" || pnlPct === null) {
       // Show position info even if price fetch fails
-      const entryLabel = effectiveEntry && effectiveEntry > 0 
-        ? formatSol(effectiveEntry)
-        : "0 SOL";
       lines.push(
         `⚠️ <a href="${chartUrl}">${tokenDisplay}</a>  [price unavailable]\n` +
-        `  Entry: ${entryLabel}  |  Cost: ${formatSol(pos.costSol)}\n` +
+        `  Entry: ${entryPriceFormatted}  |  Cost: ${formatSol(pos.costSol)}\n` +
         `  🎯 AUTO-CLOSE @ +20%  |  <code>${esc(String(durationMin))}</code>m\n`
       );
       continue;
     }
     
     // Sanity check: If price is way off from entry (>10x difference), likely bad price
-    const entry = effectiveEntry || pos.entryPrice;
-    if (entry > 0 && currentPrice) {
-      const priceRatio = Math.max(currentPrice / entry, entry / currentPrice);
+    if (entryPrice > 0 && currentPrice) {
+      const priceRatio = Math.max(currentPrice / entryPrice, entryPrice / currentPrice);
       if (priceRatio > 10) {
+        const currentPriceFormatted = currentPrice < 0.000001
+          ? `${currentPrice.toExponential(6)} SOL`
+          : formatSol(currentPrice);
         lines.push(
           `<a href="${chartUrl}">${tokenDisplay}</a>  [price unreliable]\n` +
-          `  Entry: ${formatSol(entry)}  |  Current: [unreliable]\n` +
+          `  Entry: ${entryPriceFormatted}  |  Current: [unreliable]\n` +
           `  ⏳ EARLY TP  |  <code>${esc(String(durationMin))}</code>m\n`
         );
         continue;
@@ -1103,7 +1108,6 @@ bot.onText(/^\/open$/, async (msg) => {
     
     // We have reliable prices - show P&L
     const uPct = pnlPct!;
-    const entryPrice = effectiveEntry || pos.entryPrice;
     const uSol = currentPrice! > 0 && entryPrice > 0 
       ? (currentPrice! - entryPrice) * (pos.costSol / entryPrice)
       : 0;
@@ -1111,12 +1115,17 @@ bot.onText(/^\/open$/, async (msg) => {
     const sign = uPct >= 0 ? '+' : '';
     const phaseLabel = '🎯 AUTO-CLOSE @ +20%';
     
+    // Format current price with sufficient precision
+    const currentPriceFormatted = currentPrice! < 0.000001
+      ? `${currentPrice!.toExponential(6)} SOL`
+      : formatSol(currentPrice!);
+    
     // Highlight profit/loss with emojis
     const profitEmoji = uPct >= 0 ? '🟢' : '🔴';
     
     lines.push(
       `${profitEmoji} <a href="${chartUrl}"><b>${tokenDisplay}</b></a>  <code>${esc(sign + uPct.toFixed(1))}</code>%  |  ${sign}${formatUsd(uUsd)}\n` +
-      `  Entry: ${formatSol(entryPrice)}  |  Now: ${formatSol(currentPrice!)}\n` +
+      `  Entry: ${entryPriceFormatted}  |  Now: ${currentPriceFormatted}\n` +
       `  ${phaseLabel}  |  <code>${esc(String(durationMin))}</code>m\n`
     );
   }
@@ -1499,49 +1508,23 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     
     dbg(`[ENTRY][DEBUG] Liquidity provider results: source=${liquiditySource}, liquidityUsd=${liquidityUsd}, ok=${liquidity.ok}`);
     
-    // Step 2: Fetch current price with triangulation fallback
-    dbg(`[FORCE_BUY] Fetching price for ${short(mintStr)} (with triangulation fallback)`);
-    let currentPrice = await getQuotePrice(mintPk);
-    
-    // If price fetch failed, try using liquidity price as fallback
-    if (!currentPrice || !isValidPrice(currentPrice)) {
-      dbg(`[ENTRY][DEBUG] Primary price fetch failed, trying liquidity price fallback`);
-      if (liquidity.priceSol && isValidPrice(liquidity.priceSol)) {
-        currentPrice = liquidity.priceSol;
-        dbg(`[ENTRY][DEBUG] Using liquidity price fallback: ${currentPrice.toExponential(3)} SOL/token`);
-      } else {
-        // Get detailed error from Jupiter
-        const SOL = 'So11111111111111111111111111111111111111112';
-        let jupiterError = 'Unknown error';
-        try {
-          // Try to get a quote to see the actual error
-          await getJupiterQuote(mintStr, SOL, 1_000_000, 1000);
-        } catch (e: any) {
-          jupiterError = e?.message || String(e);
-        }
-        
-        await sendCommand(
-          msg.chat.id,
-          `❌ Could not fetch current price for <code>${short(mintStr)}</code>\n\n` +
-          `Jupiter error: <code>${jupiterError}</code>\n\n` +
-          `Possible reasons:\n` +
-          `• Token not yet indexed by Jupiter\n` +
-          `• No valid DEX route available\n` +
-          `• Token still in bonding curve (pump.fun Instant phase)\n` +
-          `• Insufficient liquidity for routing\n\n` +
-          `Check logs with: <code>grep "${short(mintStr)}" logs/bot_*.log | grep "\\[PRICE\\]"</code>`
-        );
-        return;
-      }
+    // CRITICAL: Check if liquidity is available before proceeding
+    if (!liquidity.ok || liquidityUsd <= 0) {
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Force buy aborted: <b>no liquidity</b>\n\n` +
+        `Triangulation found no liquidity for <code>${short(mintStr)}</code>.\n` +
+        `Liquidity: $${liquidityUsd.toFixed(2)} (ok=${liquidity.ok})\n\n` +
+        `The token has no available liquidity pools or all providers failed.`
+      );
+      return;
     }
     
-    dbg(`[ENTRY][DEBUG] Price after triangulation: ${currentPrice.toExponential(3)} SOL/token`);
-    
-    // Step 3: Determine buy amount (default 1 SOL, allow custom override)
+    // Step 2: Determine buy amount (default 1 SOL, allow custom override)
     const FORCE_BUY_DEFAULT_SOL = 1.0;
     const buySol = customAmount || FORCE_BUY_DEFAULT_SOL;
     
-    // Step 4: Plan entry with unified quote helper (blocks no-route entries)
+    // Step 3: Plan entry with unified quote helper (blocks no-route entries)
     const { planEntryWithQuote } = await import('./lib/trading.js');
     const planned = await planEntryWithQuote(mintStr, buySol);
     
@@ -1550,7 +1533,8 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
         msg.chat.id,
         `⛔️ Force buy aborted: <b>no_route_buy</b>\n\n` +
         `Jupiter could not find a swap path for <code>${short(mintStr)}</code>.\n` +
-        `The token is likely illiquid or Jupiter hasn't indexed it yet.`
+        `The token is likely illiquid or Jupiter hasn't indexed it yet.\n\n` +
+        `Liquidity: $${liquidityUsd.toFixed(2)} (but no Jupiter route available)`
       );
       return;
     }
@@ -1666,7 +1650,17 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
       return;
     }
     
-    dbg(`[ENTRY][FORCE] mint=${short(mintStr)} sizeSol=${buySol} mode=${pos.mode} entryPrice=${pos.entryPrice.toExponential(3)} costSol=${pos.costSol}`);
+    // DEBUG: Log full position details before creation
+    dbg(
+      `[FORCE_BUY][DEBUG][POSITION] mint=${short(mintStr)} ` +
+      `entryPrice=${finalEntryPrice.toExponential(8)} SOL/token ` +
+      `costSol=${buySol} ` +
+      `tokens=${tokenAmount.toLocaleString()} ` +
+      `liquidityUsd=$${liquidityUsd.toFixed(2)} ` +
+      `units=SOL_per_token`
+    );
+    
+    dbg(`[ENTRY][FORCE] mint=${short(mintStr)} sizeSol=${buySol} mode=${pos.mode} entryPrice=${pos.entryPrice.toExponential(8)} costSol=${pos.costSol}`);
     openPositions[mintStr] = pos;
     persistPositions();
     
@@ -1687,10 +1681,15 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     }
     const poolInfo = liquidity.pairAddress ? `\nPool: ${short(liquidity.pairAddress)}${liquiditySourceLabel}` : '';
     
+    // Format entry price with sufficient precision for small values
+    const entryPriceFormatted = finalEntryPrice < 0.000001 
+      ? `${finalEntryPrice.toExponential(6)} SOL/token`
+      : `${formatSol(finalEntryPrice)}/token`;
+    
     await tgQueue.enqueue(() => bot.sendMessage(
       TELEGRAM_CHAT_ID,
       `${tag}🔨 Force buy: <b>${tokenDisplay}</b>\n` +
-      `Entry: ${formatSol(finalEntryPrice)}${solUsd ? ` (~${formatUsd(entryPriceUsd)})` : ''}\n` +
+      `Entry: ${entryPriceFormatted}${solUsd ? ` (~${formatUsd(entryPriceUsd)})` : ''}\n` +
       `Size: ${formatSol(buySol)}${solUsd ? ` (~${formatUsd(entryUsd)})` : ''}\n` +
       `Liquidity: ${formatUsd(liquidityUsd)}${liquiditySourceLabel}${poolInfo}\n` +
       `Tokens: ${tokenAmount.toLocaleString()}`,
@@ -3042,12 +3041,23 @@ async function executeCopyTradeFromSignal(opts: {
       return 'skipped';
     }
     
+    // DEBUG: Log full position details before creation
+    dbg(
+      `[ENTRY][DEBUG][POSITION] mint=${short(mintStr)} ` +
+      `entryPrice=${finalEntryPrice.toExponential(8)} SOL/token ` +
+      `costSol=${buySol} ` +
+      `tokens=${Number(qty).toLocaleString()} ` +
+      `liquidityUsd=$${entryLiquidity.toFixed(2)} ` +
+      `source=${source} ` +
+      `units=SOL_per_token`
+    );
+    
     openPositions[mintStr] = {
         mint: mintPk,
         qty,
       costSol: buySol,
-        entryPrice: finalEntryPrice,
-        highPrice: finalEntryPrice,
+        entryPrice: finalEntryPrice, // SOL per token (not lamports)
+        highPrice: finalEntryPrice, // SOL per token (not lamports)
         entryTime,
       alpha,
       entryLiquidityUsd: entryLiquidity, // Store for liquidity drop detection (0 = unknown, skip detection)
