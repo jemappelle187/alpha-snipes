@@ -80,7 +80,16 @@ import {
 const TRADE_MODE = (process.env.TRADE_MODE || 'paper').toLowerCase();
 const IS_PAPER = TRADE_MODE !== 'live';
 
-const RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+// Dual-RPC Configuration
+// PRIMARY_SOLANA_RPC_URL replaces SOLANA_RPC_URL as the main setting
+// SOLANA_RPC_URL is kept for backwards compatibility
+const PRIMARY_RPC_URL =
+  process.env.PRIMARY_SOLANA_RPC_URL ||
+  process.env.SOLANA_RPC_URL || // backwards compatibility
+  'https://api.mainnet-beta.solana.com';
+
+const SECONDARY_RPC_URL = process.env.SECONDARY_SOLANA_RPC_URL?.trim() || '';
+
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN!;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
 const COMMAND_CHAT_ID = process.env.COMMAND_CHAT_ID || TELEGRAM_CHAT_ID;
@@ -103,9 +112,10 @@ const MAX_PRIORITY_FEE_LAMPORTS = parseInt(process.env.MAX_PRIORITY_FEE_LAMPORTS
 
 // Helius configuration
 // Extract API key from URL if embedded, or use separate env var
-const heliusKeyFromUrl = RPC_URL.match(/[?&]api-key=([^&]+)/)?.[1] || '';
+// Based on PRIMARY_RPC_URL instead of old RPC_URL
+const heliusKeyFromUrl = PRIMARY_RPC_URL.match(/[?&]api-key=([^&]+)/)?.[1] || '';
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY || heliusKeyFromUrl;
-const USE_HELIUS_RPC = RPC_URL.includes('helius') && (HELIUS_API_KEY || heliusKeyFromUrl);
+const USE_HELIUS_RPC = PRIMARY_RPC_URL.includes('helius') && (HELIUS_API_KEY || heliusKeyFromUrl);
 
 // Rug checks
 const REQUIRE_AUTH_REVOKED = (process.env.REQUIRE_AUTHORITY_REVOKED || 'true') === 'true';
@@ -178,7 +188,21 @@ if (DNS_OVERRIDE) {
     console.warn('⚠️ Failed to apply DNS override:', e?.message || e);
   }
 }
-const connection = new Connection(RPC_URL, 'confirmed');
+
+// Dual-RPC Connections
+const primaryConnection = new Connection(PRIMARY_RPC_URL, 'confirmed');
+const secondaryConnection = SECONDARY_RPC_URL
+  ? new Connection(SECONDARY_RPC_URL, 'confirmed')
+  : null;
+
+// Legacy connection alias for backwards compatibility (use primaryConnection)
+const connection = primaryConnection;
+
+if (SECONDARY_RPC_URL) {
+  console.log(`🔁 Dual-RPC enabled: Primary=${PRIMARY_RPC_URL.slice(0, 50)}... Secondary=${SECONDARY_RPC_URL.slice(0, 50)}...`);
+} else {
+  console.log(`🔁 Single RPC: ${PRIMARY_RPC_URL.slice(0, 50)}...`);
+}
 
 // Telegram Bot (with polling for commands)
 const bot = new TelegramBot(TELEGRAM_TOKEN, {
@@ -201,6 +225,51 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, {
     console.warn('⚠️ Failed to clear webhook:', e);
   }
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RPC Failover Helper
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type RpcCall<T> = (conn: Connection) => Promise<T>;
+
+async function withRpcFailover<T>(
+  fn: RpcCall<T>,
+  context: string
+): Promise<{ result: T; rpcPath: 'primary' | 'secondary' }> {
+  const started = Date.now();
+  let lastError: any = null;
+
+  // 1. Try primary
+  try {
+    const res = await fn(primaryConnection);
+    const elapsed = Date.now() - started;
+    dbg(`[RPC][OK] primary success | ctx=${context} | ms=${elapsed}`);
+    return { result: res, rpcPath: 'primary' };
+  } catch (err: any) {
+    lastError = err;
+    const elapsed = Date.now() - started;
+    dbg(`[RPC][WARN] primary failed | ctx=${context} | ms=${elapsed} | err=${err?.message || err}`);
+  }
+
+  // 2. Try secondary if available
+  if (secondaryConnection) {
+    try {
+      const res = await fn(secondaryConnection);
+      const elapsed = Date.now() - started;
+      dbg(`[RPC][OK] secondary success | ctx=${context} | ms=${elapsed}`);
+      return { result: res, rpcPath: 'secondary' };
+    } catch (err2: any) {
+      const elapsed = Date.now() - started;
+      console.error(
+        `[RPC][FATAL] secondary failed | ctx=${context} | ms=${elapsed} | primaryErr=${lastError?.message || lastError} | secondaryErr=${err2?.message || err2}`
+      );
+      throw err2;
+    }
+  }
+
+  // 3. No secondary – rethrow primary error
+  throw lastError;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Safe Transaction Fetcher (handles RPC quirks)
@@ -258,8 +327,7 @@ async function rawGetParsedTxBySig(
   }
 }
 
-async function safeGetParsedTx(connection: any, sig: string): Promise<any | null> {
-  const rpcUrl = RPC_URL;
+async function safeGetParsedTx(sig: string): Promise<{ tx: any | null; rpcPath: 'primary' | 'secondary' | null }> {
   let alreadyLogged = false;
 
   const logOnce = (msg: string, ...rest: any[]) => {
@@ -270,47 +338,68 @@ async function safeGetParsedTx(connection: any, sig: string): Promise<any | null
   };
 
   try {
-    // Primary: normal parsed call
-    const tx = await connection.getParsedTransaction(sig, {
-      maxSupportedTransactionVersion: 0,
-      commitment: "confirmed",
-    });
+    // Use withRpcFailover for primary/secondary failover
+    const { result: tx, rpcPath } = await withRpcFailover(
+      async (conn) => {
+        return await conn.getParsedTransaction(sig, {
+          maxSupportedTransactionVersion: 0,
+          commitment: "confirmed",
+        });
+      },
+      `getParsedTransaction:${short(sig)}`
+    );
+
     if (tx?.meta?.costUnits === null) {
       // sanitize in-memory for good measure
       delete (tx.meta as any).costUnits;
     }
-    return tx;
+    return { tx, rpcPath };
   } catch (e: any) {
     const msg = String(e?.message || e);
     if (msg.includes("meta.costUnits")) {
       logOnce("[DBG] costUnits=null from RPC, trying fallback getTransaction for", sig);
       try {
-        // Secondary: web3 getTransaction
-        const tx2 = await connection.getTransaction(sig, {
-          maxSupportedTransactionVersion: 0,
-          commitment: "confirmed",
-        } as any);
+        // Try getTransaction with failover
+        const { result: tx2, rpcPath } = await withRpcFailover(
+          async (conn) => {
+            return await conn.getTransaction(sig, {
+              maxSupportedTransactionVersion: 0,
+              commitment: "confirmed",
+            } as any);
+          },
+          `getTransaction:${short(sig)}`
+        );
         if (tx2?.meta?.costUnits === null) {
           delete (tx2.meta as any).costUnits;
         }
-        return tx2;
+        return { tx: tx2, rpcPath };
       } catch (e2) {
         logOnce("[DBG] fallback getTransaction failed; using raw JSON-RPC for", sig);
-        // Tertiary: raw JSON-RPC (bypasses superstruct)
-        if (rpcUrl) {
+        // Tertiary: raw JSON-RPC (bypasses superstruct) - try both RPCs
+        const rpcUrls = [PRIMARY_RPC_URL];
+        if (SECONDARY_RPC_URL) rpcUrls.push(SECONDARY_RPC_URL);
+        
+        for (const rpcUrl of rpcUrls) {
           const raw = await rawGetParsedTxBySig(rpcUrl, sig);
-          if (raw) return raw;
+          if (raw) {
+            return { tx: raw, rpcPath: rpcUrl === PRIMARY_RPC_URL ? 'primary' : 'secondary' };
+          }
         }
-        return null;
+        return { tx: null, rpcPath: null };
       }
     } else {
       // Unknown error: try raw as last resort
-      if (rpcUrl) {
+      const rpcUrls = [PRIMARY_RPC_URL];
+      if (SECONDARY_RPC_URL) rpcUrls.push(SECONDARY_RPC_URL);
+      
+      for (const rpcUrl of rpcUrls) {
         logOnce("[DBG] unknown getParsedTransaction error; trying raw JSON-RPC for", sig, e);
         const raw = await rawGetParsedTxBySig(rpcUrl, sig);
-        if (raw) return raw;
+        if (raw) {
+          return { tx: raw, rpcPath: rpcUrl === PRIMARY_RPC_URL ? 'primary' : 'secondary' };
+        }
       }
-      return null;
+      return { tx: null, rpcPath: null };
     }
   }
 }
@@ -423,17 +512,18 @@ function logAlphaBenchmark(params: {
   mint: string;
   sig: string;
   path: AlphaDetectPath;
+  rpcPath: 'primary' | 'secondary';
   blockTimeMs: number;
   detectionTimeMs: number;
   signalAgeSec: number;
   solSpent: number;
   tokenDelta: number;
 }) {
-  const { alpha, mint, sig, path, blockTimeMs, detectionTimeMs, signalAgeSec, solSpent, tokenDelta } = params;
+  const { alpha, mint, sig, path, rpcPath, blockTimeMs, detectionTimeMs, signalAgeSec, solSpent, tokenDelta } = params;
   const btIso = new Date(blockTimeMs).toISOString();
   dbg(
     `[BENCH][ALPHA] alpha=${short(alpha)} mint=${short(mint)} sig=${short(sig)} ` +
-      `path=${path} blockTime=${btIso} detectDelayMs=${detectionTimeMs.toFixed(0)} ` +
+      `path=${path} rpcPath=${rpcPath} blockTime=${btIso} detectDelayMs=${detectionTimeMs.toFixed(0)} ` +
       `signalAgeSec=${signalAgeSec.toFixed(1)} solSpent=${solSpent.toFixed(6)} tokenDelta=${tokenDelta}`
   );
 }
@@ -2008,7 +2098,10 @@ async function getQuotePrice(mint: PublicKey): Promise<number | null> {
           // Get token decimals to normalize the amount
           let tokenDecimals = 9; // Default assumption
           try {
-            const mintInfo = await connection.getParsedAccountInfo(mint);
+            const { result: mintInfo } = await withRpcFailover(
+              async (conn) => await conn.getParsedAccountInfo(mint),
+              `getParsedAccountInfo:${shortMint}`
+            );
             const parsed = mintInfo.value?.data;
             if (parsed && 'parsed' in parsed && parsed.parsed?.info?.decimals !== undefined) {
               tokenDecimals = Number(parsed.parsed.info.decimals);
@@ -2176,10 +2269,15 @@ setInterval(async () => {
     try {
       const pk = new PublicKey(alpha);
       const lastSeen = lastPollTime.get(alpha) || now - maxAge; // Default to 30s ago
-      const sigs = await connection.getSignaturesForAddress(pk, {
-        limit: 10, // Reduced to focus on recent transactions
-        until: undefined,
-      });
+      const { result: sigs } = await withRpcFailover(
+        async (conn) => {
+          return await conn.getSignaturesForAddress(pk, {
+            limit: 10, // Reduced to focus on recent transactions
+            until: undefined,
+          });
+        },
+        `getSignaturesForAddress:${short(alpha)}`
+      );
 
       for (const sigInfo of sigs) {
         if (!sigInfo.blockTime) continue;
@@ -2237,11 +2335,14 @@ setInterval(async () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function handleAlphaTransaction(sig: string, signer: string, label: 'active' | 'candidate', path: AlphaDetectPath = 'logs') {
-  const tx = await safeGetParsedTx(connection, sig);
+  const { tx, rpcPath: txRpcPath } = await safeGetParsedTx(sig);
   if (!tx || !tx.meta) {
     if (DEBUG_TX) dbg(`skip tx ${sig.slice(0, 8)}: no parsed meta after safeGetParsedTx`);
     return;
   }
+  
+  // Store rpcPath for benchmark logging
+  const rpcPath = txRpcPath || 'primary'; // Default to primary if null
 
   // Guard meta fields
   const pre = tx.meta.preTokenBalances ?? [];
@@ -2268,6 +2369,7 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
       mint: signal.mint,
       sig,
       path,
+      rpcPath,
       blockTimeMs,
       detectionTimeMs,
       signalAgeSec: signal.signalAgeSec,
@@ -3904,10 +4006,15 @@ async function scanRecentAlphaTransactions() {
   for (const alpha of ACTIVE_ALPHAS) {
     try {
       const pk = new PublicKey(alpha);
-      const sigs = await connection.getSignaturesForAddress(pk, {
-        limit: 100, // Increased from 50 to cover longer time window
-        until: undefined,
-      });
+      const { result: sigs } = await withRpcFailover(
+        async (conn) => {
+          return await conn.getSignaturesForAddress(pk, {
+            limit: 100, // Increased from 50 to cover longer time window
+            until: undefined,
+          });
+        },
+        `getSignaturesForAddress:${short(alpha)}:scan`
+      );
 
       for (const sigInfo of sigs) {
         if (!sigInfo.blockTime) continue;
@@ -3943,10 +4050,15 @@ async function scanRecentAlphaTransactions() {
         // Retry once
         try {
           const pk = new PublicKey(alpha);
-          const sigs = await connection.getSignaturesForAddress(pk, {
-            limit: 100,
-            until: undefined,
-          });
+          const { result: sigs } = await withRpcFailover(
+            async (conn) => {
+              return await conn.getSignaturesForAddress(pk, {
+                limit: 100,
+                until: undefined,
+              });
+            },
+            `getSignaturesForAddress:${short(alpha)}:scan:retry`
+          );
           // Process retry (same logic as above, but simplified)
           for (const sigInfo of sigs) {
             if (!sigInfo.blockTime) continue;

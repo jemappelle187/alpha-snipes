@@ -256,12 +256,41 @@ To measure how fast the bot sees alpha buys:
 pm2 logs alpha-snipes-paper --lines 500 | grep "[BENCH][ALPHA]" | npm run alpha:bench
 ```
 
-This prints detection latency (on-chain → bot) and signal age stats, split by logs vs polling.
+This prints detection latency (on-chain → bot) and signal age stats, split by logs vs polling and primary vs secondary RPC.
 
 **Use cases:**
 - Compare RPC providers (Helius vs QuickNode, etc.)
 - Monitor detection speed over time
 - Identify when polling backup is needed vs real-time logs
+- Measure RPC failover effectiveness
+
+### RPC Setup
+
+The bot supports dual-RPC configuration with automatic failover for improved reliability:
+
+**Primary RPC** (`PRIMARY_SOLANA_RPC_URL`):
+- Main endpoint for all RPC operations
+- Recommended: Helius free tier (`https://mainnet.helius-rpc.com/?api-key=YOUR_KEY`)
+- Falls back to `SOLANA_RPC_URL` (legacy) if not set
+
+**Secondary RPC** (`SECONDARY_SOLANA_RPC_URL`):
+- Optional fallback endpoint
+- Automatically used if primary fails for read operations
+- Recommended: QuickNode trial or another premium provider
+- Leave empty to use single-RPC mode
+
+**Configuration:**
+```bash
+# In .env
+PRIMARY_SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+SECONDARY_SOLANA_RPC_URL=https://YOUR_ENDPOINT.solana-mainnet.quiknode.pro/YOUR_KEY
+```
+
+**How it works:**
+- All read operations (transaction fetching, signature polling) automatically failover to secondary if primary fails
+- WebSocket subscriptions (`onLogs`) remain on primary only
+- Benchmark logs track which RPC handled each signal (`rpcPath=primary|secondary`)
+- Use the Alpha Speed Benchmark tool to compare latency and reliability between RPC combinations
 
 ---
 

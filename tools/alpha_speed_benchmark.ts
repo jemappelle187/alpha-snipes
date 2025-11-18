@@ -20,6 +20,7 @@ interface BenchmarkSample {
   detectDelayMs: number;
   signalAgeSec: number;
   path: 'logs' | 'poll';
+  rpcPath: 'primary' | 'secondary';
   solSpent: number;
 }
 
@@ -31,11 +32,11 @@ function percentile(arr: number[], p: number): number {
 }
 
 function parseBenchmarkLine(line: string): BenchmarkSample | null {
-  // Pattern: [BENCH][ALPHA] alpha=... mint=... sig=... path=logs|poll blockTime=... detectDelayMs=... signalAgeSec=... solSpent=... tokenDelta=...
-  const match = line.match(/\[BENCH\]\[ALPHA\].*path=(\w+).*detectDelayMs=([\d.]+).*signalAgeSec=([\d.]+).*solSpent=([\d.]+)/);
+  // Pattern: [BENCH][ALPHA] alpha=... mint=... sig=... path=logs|poll rpcPath=primary|secondary blockTime=... detectDelayMs=... signalAgeSec=... solSpent=... tokenDelta=...
+  const match = line.match(/\[BENCH\]\[ALPHA\].*path=(\w+).*rpcPath=(\w+).*detectDelayMs=([\d.]+).*signalAgeSec=([\d.]+).*solSpent=([\d.]+)/);
   if (!match) return null;
   
-  const [, path, detectDelayMsStr, signalAgeSecStr, solSpentStr] = match;
+  const [, path, rpcPath, detectDelayMsStr, signalAgeSecStr, solSpentStr] = match;
   const detectDelayMs = parseFloat(detectDelayMsStr);
   const signalAgeSec = parseFloat(signalAgeSecStr);
   const solSpent = parseFloat(solSpentStr);
@@ -48,10 +49,15 @@ function parseBenchmarkLine(line: string): BenchmarkSample | null {
     return null;
   }
   
+  if (rpcPath !== 'primary' && rpcPath !== 'secondary') {
+    return null;
+  }
+  
   return {
     detectDelayMs,
     signalAgeSec,
     path: path as 'logs' | 'poll',
+    rpcPath: rpcPath as 'primary' | 'secondary',
     solSpent,
   };
 }
@@ -91,9 +97,11 @@ async function main() {
     process.exit(0);
   }
   
-  // Split by path
+  // Split by path and rpcPath
   const logsSamples = samples.filter(s => s.path === 'logs');
   const pollSamples = samples.filter(s => s.path === 'poll');
+  const primarySamples = samples.filter(s => s.rpcPath === 'primary');
+  const secondarySamples = samples.filter(s => s.rpcPath === 'secondary');
   
   // Calculate stats for each path
   function calcStats(pathSamples: BenchmarkSample[]) {
@@ -125,10 +133,14 @@ async function main() {
   
   const logsStats = calcStats(logsSamples);
   const pollStats = calcStats(pollSamples);
+  const primaryStats = calcStats(primarySamples);
+  const secondaryStats = calcStats(secondarySamples);
   
   // Overall stats
   const logsPct = (logsSamples.length / samples.length) * 100;
   const pollPct = (pollSamples.length / samples.length) * 100;
+  const primaryPct = (primarySamples.length / samples.length) * 100;
+  const secondaryPct = (secondarySamples.length / samples.length) * 100;
   const freshPct = (samples.filter(s => s.signalAgeSec <= 5).length / samples.length) * 100;
   const stalePct = (samples.filter(s => s.signalAgeSec > MAX_SIGNAL_AGE_SEC).length / samples.length) * 100;
   const fullBuyPct = (samples.filter(s => s.solSpent >= BUY_SOL * 0.9).length / samples.length) * 100;
@@ -137,6 +149,7 @@ async function main() {
   console.log('Alpha Speed Benchmark');
   console.log('=====================');
   console.log(`Samples: ${samples.length} (logs: ${logsSamples.length}, poll: ${pollSamples.length})`);
+  console.log(`RPC: primary: ${primarySamples.length}, secondary: ${secondarySamples.length}`);
   console.log('');
   
   if (logsSamples.length > 0) {
@@ -153,9 +166,28 @@ async function main() {
     console.log('');
   }
   
+  if (primarySamples.length > 0) {
+    console.log('Primary RPC:');
+    console.log(`  detectDelayMs: p50=${primaryStats.detectDelayMs.p50.toFixed(0)} p90=${primaryStats.detectDelayMs.p90.toFixed(0)} max=${primaryStats.detectDelayMs.max.toFixed(0)}`);
+    console.log(`  signalAgeSec: p50=${primaryStats.signalAgeSec.p50.toFixed(1)}  p90=${primaryStats.signalAgeSec.p90.toFixed(1)}  max=${primaryStats.signalAgeSec.max.toFixed(1)}`);
+    console.log('');
+  }
+  
+  if (secondarySamples.length > 0) {
+    console.log('Secondary RPC:');
+    console.log(`  detectDelayMs: p50=${secondaryStats.detectDelayMs.p50.toFixed(0)} p90=${secondaryStats.detectDelayMs.p90.toFixed(0)} max=${secondaryStats.detectDelayMs.max.toFixed(0)}`);
+    console.log(`  signalAgeSec: p50=${secondaryStats.signalAgeSec.p50.toFixed(1)}  p90=${secondaryStats.signalAgeSec.p90.toFixed(1)}  max=${secondaryStats.signalAgeSec.max.toFixed(1)}`);
+    console.log('');
+  }
+  
   console.log('Route share:');
   console.log(`  logs: ${logsPct.toFixed(1)}%`);
   console.log(`  poll: ${pollPct.toFixed(1)}%`);
+  console.log('');
+  
+  console.log('RPC share:');
+  console.log(`  primary: ${primaryPct.toFixed(1)}%`);
+  console.log(`  secondary: ${secondaryPct.toFixed(1)}%`);
   console.log('');
   
   console.log('Freshness:');
