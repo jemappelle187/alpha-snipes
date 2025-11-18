@@ -1052,6 +1052,7 @@ bot.onText(/^\/pnl(?:\s+(\S+))?$/, async (msg, match) => {
 // Open positions command
 bot.onText(/^\/open$/, async (msg) => {
   if (!isAdmin(msg)) return;
+  const { getEffectiveEntryPrice, computePnlPct } = await import('./lib/pricing.js');
   const solUsd = await getSolUsd().catch(() => 0);
   const lines: string[] = [];
   
@@ -1061,49 +1062,61 @@ bot.onText(/^\/open$/, async (msg) => {
     const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
     const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : `https://dexscreener.com/solana/${mintStr}`;
     
-    // Try to get price with timeout
+    // Recompute entry price if it was stored as 0
+    const effectiveEntry = getEffectiveEntryPrice(pos);
+    
+    // Try to get current price with timeout
     const currentPrice = await Promise.race([
       getQuotePrice(pos.mint),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)) // 5s timeout
     ]).catch(() => null);
     
-    if (!currentPrice || !isValidPrice(currentPrice)) {
+    const { pnlPct, reliability } = computePnlPct(pos, currentPrice);
+    const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
+    
+    if (reliability === "unavailable" || pnlPct === null) {
       // Show position info even if price fetch fails
-      const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
+      const entryLabel = effectiveEntry && effectiveEntry > 0 
+        ? formatSol(effectiveEntry)
+        : "0 SOL";
       lines.push(
         `⚠️ <a href="${chartUrl}">${tokenDisplay}</a>  [price unavailable]\n` +
-        `  Entry: ${formatSol(pos.entryPrice)}  |  Cost: ${formatSol(pos.costSol)}\n` +
+        `  Entry: ${entryLabel}  |  Cost: ${formatSol(pos.costSol)}\n` +
         `  🎯 AUTO-CLOSE @ +20%  |  <code>${esc(String(durationMin))}</code>m\n`
       );
       continue;
     }
     
-    // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
-    // Don't display incorrect PnL - show "price unreliable" instead
-    const priceRatio = Math.max(currentPrice / pos.entryPrice, pos.entryPrice / currentPrice);
-    if (priceRatio > 10) {
-      lines.push(
-        `<a href="${chartUrl}">${tokenDisplay}</a>  [price unreliable]\n` +
-        `  Entry: ${formatSol(pos.entryPrice)}  |  Current: [unreliable]\n` +
-        `  ⏳ EARLY TP  |  <code>${esc(String(Math.floor((Date.now() - pos.entryTime) / 60000)))}</code>m\n`
-      );
-      continue;
+    // Sanity check: If price is way off from entry (>10x difference), likely bad price
+    const entry = effectiveEntry || pos.entryPrice;
+    if (entry > 0 && currentPrice) {
+      const priceRatio = Math.max(currentPrice / entry, entry / currentPrice);
+      if (priceRatio > 10) {
+        lines.push(
+          `<a href="${chartUrl}">${tokenDisplay}</a>  [price unreliable]\n` +
+          `  Entry: ${formatSol(entry)}  |  Current: [unreliable]\n` +
+          `  ⏳ EARLY TP  |  <code>${esc(String(durationMin))}</code>m\n`
+        );
+        continue;
+      }
     }
     
-    const uPct = ((currentPrice / pos.entryPrice) - 1) * 100;
-    const uSol = (currentPrice - pos.entryPrice) * pos.costSol;
+    // We have reliable prices - show P&L
+    const uPct = pnlPct!;
+    const entryPrice = effectiveEntry || pos.entryPrice;
+    const uSol = currentPrice! > 0 && entryPrice > 0 
+      ? (currentPrice! - entryPrice) * (pos.costSol / entryPrice)
+      : 0;
     const uUsd = uSol * (solUsd || 0);
     const sign = uPct >= 0 ? '+' : '';
     const phaseLabel = '🎯 AUTO-CLOSE @ +20%';
-    const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
     
-    // Highlight profit/loss with emojis and colors
+    // Highlight profit/loss with emojis
     const profitEmoji = uPct >= 0 ? '🟢' : '🔴';
-    const pctColor = uPct >= 0 ? '' : ''; // Telegram HTML doesn't support colors, use emojis instead
     
     lines.push(
       `${profitEmoji} <a href="${chartUrl}"><b>${tokenDisplay}</b></a>  <code>${esc(sign + uPct.toFixed(1))}</code>%  |  ${sign}${formatUsd(uUsd)}\n` +
-      `  Entry: ${formatSol(pos.entryPrice)}  |  Now: ${formatSol(currentPrice)}\n` +
+      `  Entry: ${formatSol(entryPrice)}  |  Now: ${formatSol(currentPrice!)}\n` +
       `  ${phaseLabel}  |  <code>${esc(String(durationMin))}</code>m\n`
     );
   }
@@ -1527,39 +1540,100 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     // Step 3: Determine buy amount (default 1 SOL, allow custom override)
     const FORCE_BUY_DEFAULT_SOL = 1.0;
     const buySol = customAmount || FORCE_BUY_DEFAULT_SOL;
-    const buyAmountLamports = Math.floor(buySol * 1e9);
     
-    // Step 4: Execute buy
+    // Step 4: Plan entry with unified quote helper (blocks no-route entries)
+    const { planEntryWithQuote } = await import('./lib/trading.js');
+    const planned = await planEntryWithQuote(mintStr, buySol);
+    
+    if (!planned) {
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Force buy aborted: <b>no_route_buy</b>\n\n` +
+        `Jupiter could not find a swap path for <code>${short(mintStr)}</code>.\n` +
+        `The token is likely illiquid or Jupiter hasn't indexed it yet.`
+      );
+      return;
+    }
+    
+    // CRITICAL: planned.entryPrice is guaranteed > 0 by planEntryWithQuote
+    if (!planned.entryPrice || planned.entryPrice <= 0 || !Number.isFinite(planned.entryPrice)) {
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Force buy aborted: Invalid entry price calculated for <code>${short(mintStr)}</code>`
+      );
+      return;
+    }
+    
+    // Step 5: Execute buy (paper uses quote directly, live executes swap)
     dbg(`[FORCE_BUY] Executing buy for ${short(mintStr)}: ${buySol} SOL`);
-    const tx = await swapSOLforToken(mintPk, buySol);
+    let tx: { txid: string; outAmount: string };
+    let finalEntryPrice = planned.entryPrice;
+    let tokenAmount = Number(planned.tokens);
     
-    const solUsd = await getSolUsd();
-    const entryUsd = buySol * (solUsd || 0);
-    const tokenAmount = tx.outAmount ? Number(tx.outAmount) : 0;
-    
-    // Step 5: Calculate ACTUAL entry price from swap result (using validated helper)
-    let finalEntryPrice: number;
     try {
-      finalEntryPrice = await ensureValidEntryPrice({
-        buySol,
-        tokensReceived: tokenAmount,
-        liquidityPriceSol: liquidity?.priceSol ?? null,
-        quotePriceSol: isValidPrice(currentPrice) ? currentPrice : null,
-        context: 'force',
-        mintStr,
-      });
-      dbg(`[ENTRY][DEBUG][FORCE] Entry price calculation: finalEntryPrice=${finalEntryPrice.toExponential(3)}, tokenAmount=${tokenAmount}, buySol=${buySol}`);
+      if (IS_PAPER) {
+        // Paper mode: use quote directly
+        tx = {
+          txid: '[PAPER-BUY]',
+          outAmount: planned.tokens.toString(),
+        };
+      } else {
+        // Live mode: execute swap
+        tx = await swapSOLforToken(mintPk, buySol);
+        // Verify we got similar tokens (slippage may cause minor differences)
+        const actualTokens = BigInt(tx.outAmount);
+        if (actualTokens <= 0n) {
+          throw new Error('Swap returned zero or negative tokens');
+        }
+        const expectedTokens = planned.tokens;
+        const diffPct = Math.abs(Number(actualTokens - expectedTokens)) / Number(expectedTokens) * 100;
+        if (diffPct > 10) {
+          dbg(`[FORCE_BUY][WARN] Significant slippage: expected ${expectedTokens}, got ${actualTokens} (${diffPct.toFixed(1)}% diff)`);
+          tokenAmount = Number(actualTokens);
+          const recalculatedPrice = buySol / tokenAmount;
+          if (recalculatedPrice > 0 && Number.isFinite(recalculatedPrice)) {
+            finalEntryPrice = recalculatedPrice;
+          } else {
+            // Keep planned price if recalculation fails
+            dbg(`[FORCE_BUY][WARN] Recalculated price invalid (${recalculatedPrice}), using planned price (${finalEntryPrice})`);
+          }
+        } else {
+          tokenAmount = Number(actualTokens);
+        }
+      }
     } catch (err: any) {
-      if (err?.message === 'ENTRY_PRICE_UNDETERMINED') {
+      const errMsg = err?.message || String(err);
+      if (errMsg.includes('no_route') || errMsg.includes('No route') || errMsg.includes('could not find a swap path') || errMsg.includes('zero or negative tokens')) {
         await sendCommand(
           msg.chat.id,
-          `⛔️ Force buy aborted: could not determine reliable entry price for <code>${short(mintStr)}</code>\n\n` +
-          `Swap succeeded but entry price calculation failed. This should not happen.`
+          `⛔️ Force buy aborted: <b>no_route_buy</b>\n\n` +
+          `Jupiter could not find a swap path for <code>${short(mintStr)}</code>.\n` +
+          `The token is likely illiquid or Jupiter hasn't indexed it yet.`
         );
         return;
       }
       throw err;
     }
+    
+    // FINAL VALIDATION: Ensure entryPrice is valid before creating position
+    if (!finalEntryPrice || finalEntryPrice <= 0 || !Number.isFinite(finalEntryPrice)) {
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Force buy aborted: Invalid entry price for <code>${short(mintStr)}</code> (${finalEntryPrice})`
+      );
+      return;
+    }
+    
+    if (tokenAmount <= 0) {
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Force buy aborted: Invalid token amount for <code>${short(mintStr)}</code>`
+      );
+      return;
+    }
+    
+    const solUsd = await getSolUsd();
+    const entryUsd = buySol * (solUsd || 0);
     
     // Step 6: Create position with actual entry price - ALWAYS mode='normal' for force-buy
     const pos = {
@@ -1574,6 +1648,23 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
       mode: 'normal' as PositionMode, // Force-buy is always normal mode
       source: 'force' as CopyTradeSource, // Track source for exit logs
     };
+    
+    // ABSOLUTE FINAL CHECK: Never create position with entryPrice = 0
+    if (!pos.entryPrice || pos.entryPrice <= 0 || !Number.isFinite(pos.entryPrice)) {
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Position creation aborted: Invalid entry price (${pos.entryPrice}) for <code>${short(mintStr)}</code>`
+      );
+      return;
+    }
+    
+    if (pos.qty <= 0n) {
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Position creation aborted: Invalid token amount for <code>${short(mintStr)}</code>`
+      );
+      return;
+    }
     
     dbg(`[ENTRY][FORCE] mint=${short(mintStr)} sizeSol=${buySol} mode=${pos.mode} entryPrice=${pos.entryPrice.toExponential(3)} costSol=${pos.costSol}`);
     openPositions[mintStr] = pos;
@@ -2763,39 +2854,82 @@ async function executeCopyTradeFromSignal(opts: {
       return 'skipped';
       }
       
-    // Try to buy - if it fails with no_route, it means Jupiter hasn't indexed the token yet
-    // even though DexScreener shows liquidity
-    let buy;
-    let entryTime;
-    let qty: bigint;
-    let finalEntryPrice: number;
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // Unified Entry Planning (live + paper use same quote)
+    // ═══════════════════════════════════════════════════════════════════════════════
+    const { planEntryWithQuote } = await import('./lib/trading.js');
+    const planned = await planEntryWithQuote(mintStr, buySol);
     
+    if (!planned) {
+      // No route – block entry for all paths (alpha, watchlist, force-buy)
+      console.warn(`[ENTRY][SKIP][NO_ROUTE_BUY] mint=${short(mintStr)} sizeSol=${buySol}`);
+      await alert(
+        `⛔ Skipping <code>${short(mintStr)}</code>\n` +
+        `due to: <b>no_route_buy</b>: Jupiter could not find a swap path (illiquid or new token)\n\n` +
+        `• No liquidity route available on Jupiter for this token pair.\n` +
+        `• This means Jupiter could not find a valid liquidity route for the trade.\n` +
+        `• The token is likely illiquid right now, or Jupiter hasn't indexed it yet.\n` +
+        `• DexScreener may show liquidity, but Jupiter needs time to index new tokens.`
+      );
+      pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'no_route_buy' });
+      // Remove from watchlist to prevent repeated attempts
+      if (ENABLE_WATCHLIST) {
+        removeFromWatchlist(mintStr);
+      }
+      return 'skipped';
+    }
+    
+    // We have a valid quote - use it for both live and paper
+    // CRITICAL: planned.entryPrice is guaranteed > 0 by planEntryWithQuote
+    if (!planned.entryPrice || planned.entryPrice <= 0 || !Number.isFinite(planned.entryPrice)) {
+      console.error(`[ENTRY][FATAL] planEntryWithQuote returned invalid entryPrice: ${planned.entryPrice} for ${short(mintStr)}`);
+      await alert(`⛔️ Entry aborted: Invalid entry price calculated for <code>${short(mintStr)}</code>`);
+      return 'skipped';
+    }
+    
+    const entryTime = Date.now();
+    let qty = planned.tokens;
+    let finalEntryPrice = planned.entryPrice;
+    
+    // Execute swap (live) or simulate (paper)
+    let buy: { txid: string; outAmount: string };
     try {
-      buy = await swapSOLforToken(mintPk, buySol);
-      entryTime = Date.now();
-      qty = BigInt(buy.outAmount);
-      
-      // ----- Entry Price Resolution (using validated helper) -----
-      const tokensReceived = Number(qty);
-      finalEntryPrice = await ensureValidEntryPrice({
-        buySol,
-        tokensReceived,
-        liquidityPriceSol: liq?.priceSol ?? null,
-        quotePriceSol: isValidPrice(start) ? start : null,
-        context: source,
-        mintStr,
-      });
+      if (IS_PAPER) {
+        // Paper mode: use quote directly, no actual transaction
+        buy = {
+          txid: '[PAPER-BUY]',
+          outAmount: planned.tokens.toString(),
+        };
+      } else {
+        // Live mode: execute the swap using the quote
+        buy = await swapSOLforToken(mintPk, buySol);
+        // Verify we got similar tokens (slippage may cause minor differences)
+        const actualTokens = BigInt(buy.outAmount);
+        if (actualTokens <= 0n) {
+          throw new Error('Swap returned zero or negative tokens');
+        }
+        const expectedTokens = planned.tokens;
+        const diffPct = Math.abs(Number(actualTokens - expectedTokens)) / Number(expectedTokens) * 100;
+        if (diffPct > 10) {
+          dbg(`[ENTRY][WARN] Significant slippage: expected ${expectedTokens}, got ${actualTokens} (${diffPct.toFixed(1)}% diff)`);
+          // Update qty and entryPrice based on actual swap result
+          qty = actualTokens;
+          const recalculatedPrice = buySol / Number(actualTokens);
+          if (recalculatedPrice > 0 && Number.isFinite(recalculatedPrice)) {
+            finalEntryPrice = recalculatedPrice;
+          } else {
+            // Keep planned price if recalculation fails
+            dbg(`[ENTRY][WARN] Recalculated price invalid (${recalculatedPrice}), using planned price (${finalEntryPrice})`);
+          }
+        } else {
+          qty = actualTokens;
+        }
+      }
     } catch (err: any) {
       const errMsg = err?.message || String(err);
       
-      // Handle entry price determination failure
-      if (errMsg === 'ENTRY_PRICE_UNDETERMINED') {
-        return 'skipped';
-      }
-      
-      // If it's a "no route" error, Jupiter hasn't indexed the token yet
-      // even though DexScreener shows liquidity - this is a timing issue
-      if (errMsg.includes('no_route') || errMsg.includes('No route') || errMsg.includes('could not find a swap path')) {
+      // If it's a "no route" error during execution, treat same as planning failure
+      if (errMsg.includes('no_route') || errMsg.includes('No route') || errMsg.includes('could not find a swap path') || errMsg.includes('zero or negative tokens')) {
         await alert(
           `⛔ Skipping <code>${short(mintStr)}</code>\n` +
           `due to: <b>no_route_buy</b>: Jupiter could not find a swap path (illiquid or new token)\n\n` +
@@ -2804,7 +2938,7 @@ async function executeCopyTradeFromSignal(opts: {
           `• The token is likely illiquid right now, or Jupiter hasn't indexed it yet.\n` +
           `• DexScreener may show liquidity, but Jupiter needs time to index new tokens.`
         );
-        // Remove from watchlist to prevent repeated attempts
+        pushEvent({ t: Date.now(), kind: 'skip', mint: mintStr, alpha, reason: 'no_route_buy' });
         if (ENABLE_WATCHLIST) {
           removeFromWatchlist(mintStr);
         }
@@ -2813,6 +2947,19 @@ async function executeCopyTradeFromSignal(opts: {
       
       // Re-throw other errors
       throw err;
+    }
+    
+    // FINAL VALIDATION: Ensure entryPrice is valid before creating position
+    if (!finalEntryPrice || finalEntryPrice <= 0 || !Number.isFinite(finalEntryPrice)) {
+      console.error(`[ENTRY][FATAL] Invalid finalEntryPrice: ${finalEntryPrice} for ${short(mintStr)}`);
+      await alert(`⛔️ Entry aborted: Invalid entry price for <code>${short(mintStr)}</code> (${finalEntryPrice})`);
+      return 'skipped';
+    }
+    
+    if (qty <= 0n) {
+      console.error(`[ENTRY][FATAL] Invalid qty: ${qty} for ${short(mintStr)}`);
+      await alert(`⛔️ Entry aborted: Invalid token amount for <code>${short(mintStr)}</code>`);
+      return 'skipped';
     }
     
     // Store entry liquidity for monitoring (use 0 if unknown - we'll skip liquidity drop detection in that case)
@@ -2881,6 +3028,19 @@ async function executeCopyTradeFromSignal(opts: {
     
     // Debug log for position opening
     dbg(`[ENTRY][OPEN] mint=${short(mintStr)} source=${source} sizeSol=${buySol} mode=${finalMode}`);
+    
+    // ABSOLUTE FINAL CHECK: Never create position with entryPrice = 0
+    if (!finalEntryPrice || finalEntryPrice <= 0 || !Number.isFinite(finalEntryPrice)) {
+      console.error(`[ENTRY][FATAL][ABORT] Attempted to create position with entryPrice=${finalEntryPrice} for ${short(mintStr)}`);
+      await alert(`⛔️ Position creation aborted: Invalid entry price (${finalEntryPrice}) for <code>${short(mintStr)}</code>`);
+      return 'skipped';
+    }
+    
+    if (qty <= 0n) {
+      console.error(`[ENTRY][FATAL][ABORT] Attempted to create position with qty=${qty} for ${short(mintStr)}`);
+      await alert(`⛔️ Position creation aborted: Invalid token amount for <code>${short(mintStr)}</code>`);
+      return 'skipped';
+    }
     
     openPositions[mintStr] = {
         mint: mintPk,
@@ -3450,8 +3610,14 @@ async function manageExit(mintStr: string) {
     }
     
     // 3. Max loss protection: force exit if down >10% from entry
-    const currentLossPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
-    if (currentLossPct <= MAX_LOSS_PCT) {
+    const { computePnlPct } = await import('./lib/pricing.js');
+    const { pnlPct, reliability } = computePnlPct(pos, price);
+    
+    if (reliability === "unavailable" || pnlPct === null) {
+      // No reliable price - skip max loss check
+      dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price unavailable (entry=${pos.entryPrice}, current=${price})`);
+    } else if (pnlPct <= MAX_LOSS_PCT) {
+      const currentLossPct = pnlPct;
       try {
         dbg(`[EXIT] Max loss protection triggered for ${short(mintStr)}: ${currentLossPct.toFixed(1)}%`);
         const tx = await swapTokenForSOL(pos.mint, pos.qty);
@@ -3692,7 +3858,7 @@ async function manageExit(mintStr: string) {
 async function postBuySentry(mintStr: string) {
   const pos = openPositions[mintStr];
   if (!pos) return;
-  const entry = pos.entryPrice || 0;
+  const { computePnlPct } = await import('./lib/pricing.js');
   const start = Date.now();
 
   await alert(`🛡️ Sentry monitoring ${mintStr.slice(0, 12)}... for ${SENTRY_WINDOW_SEC}s...`);
@@ -3702,17 +3868,24 @@ async function postBuySentry(mintStr: string) {
     if (!openPositions[mintStr]) return;
 
     const price = await getQuotePrice(pos.mint);
-    if (!price || entry === 0) continue;
+    const { pnlPct, reliability } = computePnlPct(pos, price);
     
-    // Sanity check: If price is way off from entry (>10x difference), likely bad price from BUY fallback
-    // Skip this check and wait for next price update
-    const priceRatio = Math.max(price / entry, entry / price);
+    if (reliability === "unavailable" || pnlPct === null) {
+      // No reliable price - skip this check
+      dbg(`[SENTRY] Skipping sentry check for ${short(mintStr)}: price unavailable (entry=${pos.entryPrice}, current=${price})`);
+      continue;
+    }
+    
+    // Sanity check: If price is way off from entry (>10x difference), likely bad price
+    const entry = pos.entryPrice;
+    const priceRatio = Math.max(price! / entry, entry / price!);
     if (priceRatio > 10) {
-      dbg(`[SENTRY] Skipping sentry check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${entry.toExponential(3)}, current: ${price.toExponential(3)})`);
+      dbg(`[SENTRY] Skipping sentry check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${entry.toExponential(3)}, current: ${price!.toExponential(3)})`);
       continue;
     }
 
-    const dd = (entry - price) / entry;
+    // Convert P&L % to drawdown (negative P&L = drawdown)
+    const dd = pnlPct < 0 ? -pnlPct / 100 : 0;
     if (dd >= SENTRY_MAX_DD) {
       try {
         const tx = await swapTokenForSOL(pos.mint, pos.qty);
