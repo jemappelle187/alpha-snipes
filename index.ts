@@ -3879,12 +3879,15 @@ setInterval(checkDailyRecap, 5 * 60 * 1000);
 async function main() {
   const mode = IS_PAPER ? '📄 PAPER MODE' : '💰 LIVE MODE';
   console.log(`🚀 Alpha Snipes Bot Starting... ${mode}`);
-  console.log(`🔧 SOLANA_RPC_URL: ${RPC_URL}`);
+  console.log(`🔧 PRIMARY_RPC_URL: ${PRIMARY_RPC_URL.slice(0, 60)}...`);
+  if (SECONDARY_RPC_URL) {
+    console.log(`🔧 SECONDARY_RPC_URL: ${SECONDARY_RPC_URL.slice(0, 60)}...`);
+  }
   console.log(`[CONFIG] MAX_SIGNAL_AGE_SEC = ${MAX_SIGNAL_AGE_SEC}s (${MAX_SIGNAL_AGE_SEC / 60} minutes)`);
   if (USE_HELIUS_RPC) {
     const maskedKey = HELIUS_API_KEY ? `${HELIUS_API_KEY.slice(0, 8)}...${HELIUS_API_KEY.slice(-4)}` : 'extracted from URL';
     console.log(`✅ Helius RPC enabled (API key: ${maskedKey})`);
-  } else if (RPC_URL.includes('helius') && !HELIUS_API_KEY) {
+  } else if (PRIMARY_RPC_URL.includes('helius') && !HELIUS_API_KEY) {
     console.log(`⚠️  Helius RPC URL detected but no API key found`);
   }
   console.log(`📍 Wallet: ${walletKeypair.publicKey.toBase58()}`);
