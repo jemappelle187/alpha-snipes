@@ -1526,7 +1526,7 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     
     // Step 3: Plan entry with unified quote helper (blocks no-route entries)
     const { planEntryWithQuote } = await import('./lib/trading.js');
-    const planned = await planEntryWithQuote(mintStr, buySol);
+    const planned = await planEntryWithQuote(mintStr, buySol, connection);
     
     if (!planned) {
       await sendCommand(
@@ -1573,14 +1573,11 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
         const diffPct = Math.abs(Number(actualTokens - expectedTokens)) / Number(expectedTokens) * 100;
         if (diffPct > 10) {
           dbg(`[FORCE_BUY][WARN] Significant slippage: expected ${expectedTokens}, got ${actualTokens} (${diffPct.toFixed(1)}% diff)`);
+          // Update qty - but keep planned entryPrice (it's already calculated correctly with decimals)
+          // Recalculating entryPrice here would require token decimals which we don't have in this context
           tokenAmount = Number(actualTokens);
-          const recalculatedPrice = buySol / tokenAmount;
-          if (recalculatedPrice > 0 && Number.isFinite(recalculatedPrice)) {
-            finalEntryPrice = recalculatedPrice;
-          } else {
-            // Keep planned price if recalculation fails
-            dbg(`[FORCE_BUY][WARN] Recalculated price invalid (${recalculatedPrice}), using planned price (${finalEntryPrice})`);
-          }
+          // Keep planned price - it's already correct (calculated from UI units)
+          dbg(`[FORCE_BUY][WARN] Keeping planned entryPrice (${finalEntryPrice.toExponential(6)}) despite slippage`);
         } else {
           tokenAmount = Number(actualTokens);
         }
@@ -2857,7 +2854,7 @@ async function executeCopyTradeFromSignal(opts: {
     // Unified Entry Planning (live + paper use same quote)
     // ═══════════════════════════════════════════════════════════════════════════════
     const { planEntryWithQuote } = await import('./lib/trading.js');
-    const planned = await planEntryWithQuote(mintStr, buySol);
+    const planned = await planEntryWithQuote(mintStr, buySol, connection);
     
     if (!planned) {
       // No route – block entry for all paths (alpha, watchlist, force-buy)
@@ -2911,15 +2908,11 @@ async function executeCopyTradeFromSignal(opts: {
         const diffPct = Math.abs(Number(actualTokens - expectedTokens)) / Number(expectedTokens) * 100;
         if (diffPct > 10) {
           dbg(`[ENTRY][WARN] Significant slippage: expected ${expectedTokens}, got ${actualTokens} (${diffPct.toFixed(1)}% diff)`);
-          // Update qty and entryPrice based on actual swap result
+          // Update qty - but keep planned entryPrice (it's already calculated correctly with decimals)
+          // Recalculating entryPrice here would require token decimals which we don't have in this context
           qty = actualTokens;
-          const recalculatedPrice = buySol / Number(actualTokens);
-          if (recalculatedPrice > 0 && Number.isFinite(recalculatedPrice)) {
-            finalEntryPrice = recalculatedPrice;
-          } else {
-            // Keep planned price if recalculation fails
-            dbg(`[ENTRY][WARN] Recalculated price invalid (${recalculatedPrice}), using planned price (${finalEntryPrice})`);
-          }
+          // Keep planned price - it's already correct (calculated from UI units)
+          dbg(`[ENTRY][WARN] Keeping planned entryPrice (${finalEntryPrice.toExponential(6)}) despite slippage`);
         } else {
           qty = actualTokens;
         }
@@ -3881,20 +3874,37 @@ async function postBuySentry(mintStr: string) {
     const { pnlPct, reliability } = computePnlPct(pos, price);
     
     if (reliability === "unavailable" || pnlPct === null) {
-      // No reliable price - skip this check
-      dbg(`[SENTRY] Skipping sentry check for ${short(mintStr)}: price unavailable (entry=${pos.entryPrice}, current=${price})`);
+      // No reliable price - skip this check (do NOT trigger max-loss)
+      dbg(`[SENTRY][SKIP][NO_PRICE] mint=${short(mintStr)} reason="price unavailable" entry=${pos.entryPrice} current=${price}`);
+      continue;
+    }
+    
+    // Ensure price is valid before using it
+    if (price === null || !price || price <= 0) {
+      dbg(`[SENTRY][SKIP][NO_PRICE] mint=${short(mintStr)} reason="price is null or invalid" entry=${pos.entryPrice} current=${price}`);
+      continue;
+    }
+    
+    // Ensure pnlPct is a valid number
+    if (pnlPct === null || !Number.isFinite(pnlPct)) {
+      dbg(`[SENTRY][SKIP][NO_PRICE] mint=${short(mintStr)} reason="pnlPct is null or invalid" pnlPct=${pnlPct}`);
       continue;
     }
     
     // Sanity check: If price is way off from entry (>10x difference), likely bad price
     const entry = pos.entryPrice;
-    const priceRatio = Math.max(price! / entry, entry / price!);
+    if (!entry || entry <= 0) {
+      dbg(`[SENTRY][SKIP][NO_PRICE] mint=${short(mintStr)} reason="entryPrice is invalid" entry=${entry}`);
+      continue;
+    }
+    const priceRatio = Math.max(price / entry, entry / price);
     if (priceRatio > 10) {
-      dbg(`[SENTRY] Skipping sentry check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${entry.toExponential(3)}, current: ${price!.toExponential(3)})`);
+      dbg(`[SENTRY] Skipping sentry check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio.toFixed(1)}x, entry: ${entry.toExponential(3)}, current: ${price.toExponential(3)})`);
       continue;
     }
 
     // Convert P&L % to drawdown (negative P&L = drawdown)
+    // Only proceed if pnlPct is a real number (not null)
     const dd = pnlPct < 0 ? -pnlPct / 100 : 0;
     if (dd >= SENTRY_MAX_DD) {
       try {
