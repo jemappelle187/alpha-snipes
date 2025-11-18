@@ -214,7 +214,7 @@ async function fetchDexscreenerPools(mint: string): Promise<NormalizedPool[]> {
   return pools;
 }
 
-async function fetchBirdeyePools(mint: string): Promise<NormalizedPool[]> {
+async function fetchBirdeyePoolsInternal(mint: string): Promise<NormalizedPool[]> {
   const snapshot = await fetchTokenSnapshot(mint);
   
   if (!snapshot.liquidityUsd || snapshot.liquidityUsd <= 0) {
@@ -244,6 +244,18 @@ async function fetchBirdeyePools(mint: string): Promise<NormalizedPool[]> {
   };
 
   return [pool];
+}
+
+async function fetchBirdeyePools(mint: string): Promise<NormalizedPool[]> {
+  try {
+    return await fetchBirdeyePoolsInternal(mint);
+  } catch (err) {
+    console.warn(`[BIRDEYE][WARN] TLS / API error – ignoring Birdeye for this mint`, {
+      mint: mint.slice(0, 8) + '...',
+      msg: (err as any)?.message || String(err),
+    });
+    return [];
+  }
 }
 
 export interface GmgnSnapshot {
