@@ -135,6 +135,18 @@ check "Exit error handling" "crashed exit failed|exit failed" 0
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "G. Alpha Speed Benchmark (optional)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Alpha speed benchmark (optional)
+if command -v tsx >/dev/null 2>&1 || command -v node >/dev/null 2>&1; then
+  echo "== Alpha speed benchmark (last ${LOG_LINES} lines) =="
+  pm2 logs "$BOT_NAME" --lines "$LOG_LINES" --nostream 2>/dev/null | grep "\[BENCH\]\[ALPHA\]" | npm run alpha:bench 2>/dev/null || true
+  echo ""
+fi
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Summary"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 

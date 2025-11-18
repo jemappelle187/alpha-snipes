@@ -248,6 +248,21 @@ pm2 logs alpha-snipes-paper --lines 100 | grep -E "\[EXIT\].*Position closed"
 - ✅ No "Cannot access 'priceRatio'" errors
 - ✅ Exit logs show proper reasons (hard_profit_20pct, max_loss, etc.)
 
+### Alpha Speed Benchmark
+
+To measure how fast the bot sees alpha buys:
+
+```bash
+pm2 logs alpha-snipes-paper --lines 500 | grep "[BENCH][ALPHA]" | npm run alpha:bench
+```
+
+This prints detection latency (on-chain → bot) and signal age stats, split by logs vs polling.
+
+**Use cases:**
+- Compare RPC providers (Helius vs QuickNode, etc.)
+- Monitor detection speed over time
+- Identify when polling backup is needed vs real-time logs
+
 ---
 
 ## 🔐 Security

@@ -334,6 +334,7 @@ let openPositions: Record<
     phase?: 'early' | 'trailing';
     entryLiquidityUsd?: number; // Track liquidity at entry for monitoring
     mode?: PositionMode; // Explicit mode: 'normal' for standard entries, 'tiny_entry' for probe positions
+    source?: CopyTradeSource; // Track source for exit logs (alpha/watchlist/force)
   }
 > = hydratePositions(loadPositions());
 
@@ -409,6 +410,84 @@ function getMatchParam(match: RegExpExecArray | null, index: number): string | n
 
 function isValidPrice(n: number | undefined | null): boolean {
   return Number.isFinite(n as number) && (n as number) > 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Alpha Speed Benchmark Logging
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type AlphaDetectPath = 'logs' | 'poll';
+
+function logAlphaBenchmark(params: {
+  alpha: string;
+  mint: string;
+  sig: string;
+  path: AlphaDetectPath;
+  blockTimeMs: number;
+  detectionTimeMs: number;
+  signalAgeSec: number;
+  solSpent: number;
+  tokenDelta: number;
+}) {
+  const { alpha, mint, sig, path, blockTimeMs, detectionTimeMs, signalAgeSec, solSpent, tokenDelta } = params;
+  const btIso = new Date(blockTimeMs).toISOString();
+  dbg(
+    `[BENCH][ALPHA] alpha=${short(alpha)} mint=${short(mint)} sig=${short(sig)} ` +
+      `path=${path} blockTime=${btIso} detectDelayMs=${detectionTimeMs.toFixed(0)} ` +
+      `signalAgeSec=${signalAgeSec.toFixed(1)} solSpent=${solSpent.toFixed(6)} tokenDelta=${tokenDelta}`
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Entry Price Validation Helper
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function ensureValidEntryPrice(params: {
+  buySol: number;
+  tokensReceived: number;
+  liquidityPriceSol?: number | null;
+  quotePriceSol?: number | null;
+  context: string; // "alpha", "watchlist", "force"
+  mintStr: string;
+}): Promise<number> {
+  const { buySol, tokensReceived, liquidityPriceSol, quotePriceSol, context, mintStr } = params;
+  
+  // 1. Primary: Calculate from actual swap amounts (most accurate)
+  let entryPrice: number | null = null;
+  if (tokensReceived > 0) {
+    entryPrice = buySol / tokensReceived;
+    if (isValidPrice(entryPrice)) {
+      return entryPrice;
+    }
+  }
+  
+  // 2. Secondary: Use triangulated liquidity price if available
+  if (!entryPrice && liquidityPriceSol && isValidPrice(liquidityPriceSol)) {
+    entryPrice = liquidityPriceSol;
+    dbg(`[ENTRY][PRICE] Using liquidity price: ${entryPrice.toExponential(3)}`);
+    return entryPrice;
+  }
+  
+  // 3. Tertiary: Use pre-swap quote price if available
+  if (!entryPrice && quotePriceSol && isValidPrice(quotePriceSol)) {
+    entryPrice = quotePriceSol;
+    dbg(`[ENTRY][PRICE] Using pre-swap quote price: ${entryPrice.toExponential(3)}`);
+    return entryPrice;
+  }
+  
+  // 4. Final fallback: Recalculate from swap amounts (should never be needed)
+  if (!entryPrice && tokensReceived > 0) {
+    entryPrice = buySol / tokensReceived;
+    if (isValidPrice(entryPrice)) {
+      dbg(`[ENTRY][PRICE] Derived entry price from swap amounts: ${entryPrice.toExponential(3)}`);
+      return entryPrice;
+    }
+  }
+  
+  // If still null/zero, abort position creation
+  dbg(`[ENTRY][PRICE][FATAL] Could not determine valid entry price | ctx=${context} | mint=${short(mintStr)} | buySol=${buySol} | tokens=${tokensReceived}`);
+  await alert(`⛔️ Skipping ${short(mintStr)}: could not determine a valid entry price (ctx=${context})`);
+  throw new Error('ENTRY_PRICE_UNDETERMINED');
 }
 
 function canPaperBuy(key: string, ms = 60_000): boolean {
@@ -1366,42 +1445,29 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     const entryUsd = buySol * (solUsd || 0);
     const tokenAmount = tx.outAmount ? Number(tx.outAmount) : 0;
     
-    // Step 5: Calculate ACTUAL entry price from swap result (robust fallback system)
-    // ----- Entry Price Resolution (Final & Correct) -----
-    // 1. Primary: Calculate from actual swap amounts (most accurate)
-    let entryPrice = tokenAmount > 0 ? buySol / tokenAmount : null;
-    
-    // 2. Secondary: Use triangulated liquidity price if available
-    if (!entryPrice && liquidity?.priceSol && isValidPrice(liquidity.priceSol)) {
-      entryPrice = liquidity.priceSol;
-      dbg(`[ENTRY][PRICE][FORCE] Using liquidity price: ${entryPrice.toExponential(3)}`);
+    // Step 5: Calculate ACTUAL entry price from swap result (using validated helper)
+    let finalEntryPrice: number;
+    try {
+      finalEntryPrice = await ensureValidEntryPrice({
+        buySol,
+        tokensReceived: tokenAmount,
+        liquidityPriceSol: liquidity?.priceSol ?? null,
+        quotePriceSol: isValidPrice(currentPrice) ? currentPrice : null,
+        context: 'force',
+        mintStr,
+      });
+      dbg(`[ENTRY][DEBUG][FORCE] Entry price calculation: finalEntryPrice=${finalEntryPrice.toExponential(3)}, tokenAmount=${tokenAmount}, buySol=${buySol}`);
+    } catch (err: any) {
+      if (err?.message === 'ENTRY_PRICE_UNDETERMINED') {
+        await sendCommand(
+          msg.chat.id,
+          `⛔️ Force buy aborted: could not determine reliable entry price for <code>${short(mintStr)}</code>\n\n` +
+          `Swap succeeded but entry price calculation failed. This should not happen.`
+        );
+        return;
+      }
+      throw err;
     }
-    
-    // 3. Tertiary: Use pre-swap quote price (currentPrice) if available
-    if (!entryPrice && isValidPrice(currentPrice)) {
-      entryPrice = currentPrice;
-      dbg(`[ENTRY][PRICE][FORCE] Using pre-swap quote price: ${entryPrice.toExponential(3)}`);
-    }
-    
-    // 4. Final fallback: Recalculate from swap amounts (should never be needed)
-    if (!entryPrice && tokenAmount > 0) {
-      entryPrice = buySol / tokenAmount;
-      dbg(`[ENTRY][PRICE][FORCE] Derived entry price from swap amounts: ${entryPrice.toExponential(3)}`);
-    }
-    
-    // If still null/zero, abort (should never happen if swap succeeded)
-    if (!entryPrice || entryPrice <= 0) {
-      dbg(`[ENTRY][PRICE][FATAL][FORCE] Could not compute entry price for mint=${short(mintStr)} — tokenAmount=${tokenAmount}, buySol=${buySol} — aborting.`);
-      await sendCommand(
-        msg.chat.id,
-        `⛔️ Force buy aborted: could not determine reliable entry price for <code>${short(mintStr)}</code>\n\n` +
-        `Swap succeeded but entry price calculation failed. This should not happen.`
-      );
-      return;
-    }
-    
-    const finalEntryPrice = entryPrice;
-    dbg(`[ENTRY][DEBUG][FORCE] Entry price calculation: finalEntryPrice=${finalEntryPrice.toExponential(3)}, tokenAmount=${tokenAmount}, buySol=${buySol}`);
     
     // Step 6: Create position with actual entry price - ALWAYS mode='normal' for force-buy
     const pos = {
@@ -2053,7 +2119,7 @@ function watchAddress(addr: string, label: 'active' | 'candidate') {
       pk,
       async (logs) => {
         if (logs.err) return;
-        await handleAlphaTransaction(logs.signature, addr, label).catch((err) => {
+        await handleAlphaTransaction(logs.signature, addr, label, 'logs').catch((err) => {
           console.error(`Error handling ${label} tx:`, err);
         });
       },
@@ -2135,7 +2201,7 @@ setInterval(async () => {
         while (retries > 0 && !success) {
           try {
             seenSignatures.add(sigInfo.signature); // Mark as seen before processing
-            await handleAlphaTransaction(sigInfo.signature, alpha, 'active');
+            await handleAlphaTransaction(sigInfo.signature, alpha, 'active', 'poll');
             success = true;
           } catch (err: any) {
             retries--;
@@ -2170,7 +2236,7 @@ setInterval(async () => {
 // Transaction Handler with Alpha Scoring
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function handleAlphaTransaction(sig: string, signer: string, label: 'active' | 'candidate') {
+async function handleAlphaTransaction(sig: string, signer: string, label: 'active' | 'candidate', path: AlphaDetectPath = 'logs') {
   const tx = await safeGetParsedTx(connection, sig);
   if (!tx || !tx.meta) {
     if (DEBUG_TX) dbg(`skip tx ${sig.slice(0, 8)}: no parsed meta after safeGetParsedTx`);
@@ -2190,6 +2256,24 @@ async function handleAlphaTransaction(sig: string, signer: string, label: 'activ
   if (signals.length === 0) {
     if (DEBUG_TX) dbg(`ignored tx ${sig.slice(0, 8)}: no qualifying BUY signals`);
     return;
+  }
+  
+  // Log benchmark for all signals (even those later skipped by guards)
+  const nowMs = Date.now();
+  for (const signal of signals) {
+    const blockTimeMs = signal.blockTimeMs ?? nowMs;
+    const detectionTimeMs = Math.max(0, nowMs - blockTimeMs);
+    logAlphaBenchmark({
+      alpha: signer,
+      mint: signal.mint,
+      sig,
+      path,
+      blockTimeMs,
+      detectionTimeMs,
+      signalAgeSec: signal.signalAgeSec,
+      solSpent: signal.solSpent,
+      tokenDelta: signal.tokenDelta,
+    });
   }
 
   // Classify transaction type once for all signals
@@ -2531,42 +2615,23 @@ async function executeCopyTradeFromSignal(opts: {
       entryTime = Date.now();
       qty = BigInt(buy.outAmount);
       
-      // ----- Entry Price Resolution (Final & Correct) -----
-      // 1. Primary: Calculate from actual swap amounts (most accurate)
+      // ----- Entry Price Resolution (using validated helper) -----
       const tokensReceived = Number(qty);
-      let entryPrice = tokensReceived > 0 ? buySol / tokensReceived : null;
-      
-      // 2. Secondary: Use triangulated liquidity price if available
-      if (!entryPrice && liq?.priceSol && isValidPrice(liq.priceSol)) {
-        entryPrice = liq.priceSol;
-        dbg(`[ENTRY][PRICE] Using liquidity price: ${entryPrice.toExponential(3)}`);
-      }
-      
-      // 3. Tertiary: Use pre-swap quote price (start) if available
-      if (!entryPrice && isValidPrice(start)) {
-        entryPrice = start;
-        dbg(`[ENTRY][PRICE] Using pre-swap quote price: ${entryPrice.toExponential(3)}`);
-      }
-      
-      // 4. Final fallback: Recalculate from swap amounts (should never be needed)
-      if (!entryPrice && tokensReceived > 0) {
-        entryPrice = buySol / tokensReceived;
-        dbg(`[ENTRY][PRICE] Derived entry price from swap amounts: ${entryPrice.toExponential(3)}`);
-      }
-      
-      // If still null/zero, abort (should never happen if swap succeeded)
-      if (!entryPrice || entryPrice <= 0) {
-        dbg(`[ENTRY][PRICE][FATAL] Could not compute entry price for mint=${short(mintStr)} — tokensReceived=${tokensReceived}, buySol=${buySol} — aborting position.`);
-        await alert(
-          `❌ Position creation failed for <code>${short(mintStr)}</code>\n` +
-          `Could not determine entry price after swap. This should not happen.`
-        );
-        return 'skipped';
-      }
-      
-      finalEntryPrice = entryPrice;
+      finalEntryPrice = await ensureValidEntryPrice({
+        buySol,
+        tokensReceived,
+        liquidityPriceSol: liq?.priceSol ?? null,
+        quotePriceSol: isValidPrice(start) ? start : null,
+        context: source,
+        mintStr,
+      });
     } catch (err: any) {
       const errMsg = err?.message || String(err);
+      
+      // Handle entry price determination failure
+      if (errMsg === 'ENTRY_PRICE_UNDETERMINED') {
+        return 'skipped';
+      }
       
       // If it's a "no route" error, Jupiter hasn't indexed the token yet
       // even though DexScreener shows liquidity - this is a timing issue
@@ -2666,22 +2731,48 @@ async function executeCopyTradeFromSignal(opts: {
     const sizingLine = `Size: ${formatSol(buySol)}`;
     
     // Use the entry price from signal if available, otherwise use calculated price
+    // finalEntryPrice is guaranteed to be valid (> 0) by ensureValidEntryPrice
     const displayEntryPrice = isValidPrice(signal.alphaEntryPrice) ? signal.alphaEntryPrice : finalEntryPrice;
-    const displayEntryPriceUsd = displayEntryPrice * (solUsd || 0);
-    const tokensReceived = Number(qty);
     
-    await tgQueue.enqueue(
-      () =>
-        bot.sendMessage(
-        TELEGRAM_CHAT_ID,
-          `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
-          `Entry Price: ${formatSol(displayEntryPrice)} SOL/token${solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''}\n` +
-          `Cost: ${formatSol(buySol)} SOL${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
-          `Tokens: ${formatTokens(tokensReceived)}`,
-          linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
-        ),
-      { chatId: TELEGRAM_CHAT_ID }
-    );
+    // Safety guard: ensure we never display 0 entry price
+    if (!isValidPrice(displayEntryPrice)) {
+      dbg(`[ENTRY][PRICE][BUG] displayEntryPrice invalid (${displayEntryPrice}), using finalEntryPrice (${finalEntryPrice})`);
+      const fallbackPrice = finalEntryPrice;
+      if (!isValidPrice(fallbackPrice)) {
+        throw new Error(`[ENTRY][PRICE][BUG] Both displayEntryPrice and finalEntryPrice are invalid - this should never happen`);
+      }
+      const displayEntryPriceUsd = fallbackPrice * (solUsd || 0);
+      const tokensReceived = Number(qty);
+      
+      await tgQueue.enqueue(
+        () =>
+          bot.sendMessage(
+          TELEGRAM_CHAT_ID,
+            `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
+            `Entry Price: ${formatSol(fallbackPrice)} SOL/token${solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''}\n` +
+            `Cost: ${formatSol(buySol)} SOL${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
+            `Tokens: ${formatTokens(tokensReceived)}`,
+            linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
+          ),
+        { chatId: TELEGRAM_CHAT_ID }
+      );
+    } else {
+      const displayEntryPriceUsd = displayEntryPrice * (solUsd || 0);
+      const tokensReceived = Number(qty);
+      
+      await tgQueue.enqueue(
+        () =>
+          bot.sendMessage(
+          TELEGRAM_CHAT_ID,
+            `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
+            `Entry Price: ${formatSol(displayEntryPrice)} SOL/token${solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''}\n` +
+            `Cost: ${formatSol(buySol)} SOL${solUsd ? ` (${formatUsd(buyUsd)})` : ''}\n` +
+            `Tokens: ${formatTokens(tokensReceived)}`,
+            linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
+          ),
+        { chatId: TELEGRAM_CHAT_ID }
+      );
+    }
 
       recordTrade({
         t: entryTime,
@@ -3117,7 +3208,15 @@ async function manageExit(mintStr: string) {
     consecutivePriceFailures = 0; // Reset on successful price fetch
     lastPrice = price; // Update for next iteration's dynamic polling
     
-    // Liquidity drop detection: Exit if liquidity drops >50% from entry (early warning of potential rug)
+    // Exit Priority Order:
+    // 1. Dead token (no price for >60s) → exit reason=dead_token
+    // 2. Liquidity drop (>50% from entry) → exit reason=liquidity_drop
+    // 3. Max loss (-10% or configured) → exit reason=max_loss
+    // 4. +20% TP (hard take profit) → exit reason=hard_profit_20pct
+    // 5. Crashed token (insane priceRatio / oracle weirdness) → exit reason=crashed_token
+    // 6. Milestone alerts (>10% etc, but do NOT block any exit)
+    
+    // 2. Liquidity drop detection: Exit if liquidity drops >50% from entry (early warning of potential rug)
     if (pos.entryLiquidityUsd && pos.entryLiquidityUsd > 0) {
       const currentLiquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 10_000 }).catch(() => null);
       if (currentLiquidity?.ok && currentLiquidity.liquidityUsd !== null) {
@@ -3173,76 +3272,7 @@ async function manageExit(mintStr: string) {
       }
     }
     
-    // Calculate priceRatio early if we have valid prices (used for multiple checks)
-    if (isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0) {
-      const hi = Math.max(price, pos.entryPrice);
-      const lo = Math.min(price, pos.entryPrice);
-      priceRatio = hi / lo;
-    }
-    
-    // Note: Price ratio check was already done above for milestone calculations
-    // This check is for crashed token detection (different threshold)
-    const priceRatioForCrash = priceRatio !== null ? priceRatio : Math.max(price / pos.entryPrice, pos.entryPrice / price);
-    const priceDropFromEntryPct = priceRatio !== null && pos.entryPrice > 0 ? ((pos.entryPrice - price) / pos.entryPrice) * 100 : 0;
-    
-    if (priceRatioForCrash > 10) {
-      // If price is extremely unreliable (>15x difference), likely token crashed - force exit
-      // Also check if price dropped >90% (clear crash indicator)
-      if (priceRatioForCrash > 15 || (priceRatioForCrash > 10 && priceDropFromEntryPct > 90)) {
-        dbg(`[EXIT] Price extremely unreliable (${priceRatioForCrash.toFixed(1)}x) for ${short(mintStr)} - likely crashed, forcing exit`);
-        try {
-          const tx = await swapTokenForSOL(pos.mint, pos.qty);
-          const solUsd = await getSolUsd();
-          const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
-          const entryUsd = pos.costSol * (solUsd || 0);
-          const exitUsd = exitSol * (solUsd || 0);
-          const pnlUsd = exitUsd - entryUsd;
-          const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : -100;
-          
-          // Get token name for display
-          const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
-          const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
-          const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
-          
-          await tgQueue.enqueue(() => bot.sendMessage(
-            TELEGRAM_CHAT_ID,
-            `💀 Crashed token auto-exit: <b>${tokenDisplay}</b>\n` +
-            `Price unreliable (${priceRatioForCrash.toFixed(0)}x off) - likely crashed. Forcing exit.`,
-            linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
-          ), { chatId: TELEGRAM_CHAT_ID });
-          
-          recordTrade({
-            t: Date.now(),
-            kind: 'sell',
-            mode: IS_PAPER ? 'paper' : 'live',
-            mint: mintStr,
-            alpha: pos.alpha,
-            exitPriceSol: price, // Use the unreliable price as estimate
-            exitUsd,
-            pnlSol: exitSol - pos.costSol,
-            pnlUsd,
-            pnlPct,
-            durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
-            tx: tx.txid,
-          });
-          
-            dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=crashed_token | pnl=${pnlPct.toFixed(1)}%`);
-            delete openPositions[mintStr];
-            savePositions(serializeLivePositions(openPositions));
-            return;
-          } catch (err: any) {
-            const result = await handleExitError(err, mintStr, pos, 'crashed');
-            if (result === 'removed') return;
-            continue; // Retry on next iteration
-          }
-      } else {
-        // Price is unreliable but not extreme - skip max loss check but continue monitoring
-        dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price seems unreliable (ratio: ${priceRatio !== null ? priceRatio.toFixed(1) + 'x' : 'n/a'}, entry: ${pos.entryPrice.toExponential(3)}, current: ${price.toExponential(3)})`);
-        continue; // Skip this iteration, wait for next price check
-      }
-    }
-    
-    // Max loss protection: force exit if down >20% from entry
+    // 3. Max loss protection: force exit if down >10% from entry
     const currentLossPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
     if (currentLossPct <= MAX_LOSS_PCT) {
       try {
@@ -3295,127 +3325,185 @@ async function manageExit(mintStr: string) {
 
     if (price > pos.highPrice) pos.highPrice = price;
     
-    // Sanity check: Don't use unreliable prices for gain calculations
-    // priceRatio was already calculated above, but recalculate if null
-    if (priceRatio === null && isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0) {
+    // Calculate priceRatio for sanity checks (only if both prices are valid)
+    if (isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0) {
       const hi = Math.max(price, pos.entryPrice);
       const lo = Math.min(price, pos.entryPrice);
       priceRatio = hi / lo;
     }
     
-    if (priceRatio !== null && priceRatio > 10) {
-      // Price is unreliable - skip milestone and profit calculations
-      dbg(`[EXIT] Skipping milestone/profit calculations for ${short(mintStr)}: price unreliable (ratio: ${priceRatio.toFixed(1)}x, entry=${pos.entryPrice.toExponential(3)}, current=${price.toExponential(3)})`);
-      continue;
-    }
+    // 4. Auto-close at +20% gain (check BEFORE crashed_token to allow TP on sane prices)
+    // Only check if price is reasonable (priceRatio <= 10 or not calculated)
+    const priceRatioForTP = priceRatio !== null ? priceRatio : (isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0 ? Math.max(price / pos.entryPrice, pos.entryPrice / price) : 1);
     
-    // Auto-close at +20% gain (user requested - simple exit strategy)
-    const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
-    
-    // Debug: Log gain calculation
-    dbg(`[EXIT][DEBUG] gainPct=${gainPct.toFixed(2)}% for ${short(mintStr)} (price=${price.toExponential(3)}, entry=${pos.entryPrice.toExponential(3)})`);
-    
-    // Sanity check: Gain percentage should be reasonable (between -99% and +10000%)
-    if (!Number.isFinite(gainPct) || gainPct < -99 || gainPct > 10000) {
-      dbg(`[EXIT] Skipping profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct}), price=${price}, entryPrice=${pos.entryPrice}`);
-      continue;
-    }
-    
-    // Exit at +20% gain
-    if (gainPct >= 20) {
-      dbg(`[EXIT] Auto-close at +20% target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
-      try {
-        const tx = await swapTokenForSOL(pos.mint, pos.qty);
-        const solUsd = await getSolUsd();
-        const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
-        const entryUsd = pos.costSol * (solUsd || 0);
-        const exitUsd = exitSol * (solUsd || 0);
-        const pnlUsd = exitUsd - entryUsd;
-        const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : 0;
+    if (priceRatioForTP <= 10) {
+      const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+      
+      // Debug: Log gain calculation
+      dbg(`[EXIT][DEBUG] gainPct=${gainPct.toFixed(2)}% for ${short(mintStr)} (price=${price.toExponential(3)}, entry=${pos.entryPrice.toExponential(3)})`);
+      
+      // Sanity check: Gain percentage should be reasonable (between -99% and +10000%)
+      if (!Number.isFinite(gainPct) || gainPct < -99 || gainPct > 10000) {
+        dbg(`[EXIT] Skipping profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct}), price=${price}, entryPrice=${pos.entryPrice}`);
+      } else {
+        // Exit at +20% gain
+        if (gainPct >= 20) {
+          dbg(`[EXIT] Auto-close at +20% target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
+          try {
+            const tx = await swapTokenForSOL(pos.mint, pos.qty);
+            const solUsd = await getSolUsd();
+            const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+            const entryUsd = pos.costSol * (solUsd || 0);
+            const exitUsd = exitSol * (solUsd || 0);
+            const pnlUsd = exitUsd - entryUsd;
+            const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : 0;
+            
+            const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+            const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+            const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+            
+            await tgQueue.enqueue(() => bot.sendMessage(
+              TELEGRAM_CHAT_ID,
+              `✅ Auto-close at +20%: <b>${tokenDisplay}</b>\n` +
+              `Gain: +${gainPct.toFixed(1)}% (target: +20%)\n` +
+              `Entry: ${formatSol(pos.entryPrice)} → Exit: ${formatSol(price)}`,
+              linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
+            ), { chatId: TELEGRAM_CHAT_ID });
+            
+            const summaryLine = solUsd ? 
+              `💡 Bought ${formatUsd(entryUsd)} → Sold ${formatUsd(exitUsd)}  |  ` +
+              `${(pnlUsd >= 0 ? '+' : '')}${formatUsd(pnlUsd)} (${(pnlPct >= 0 ? '+' : '')}${pnlPct.toFixed(1)}%)` : '';
+            await tgQueue.enqueue(() => bot.sendMessage(TELEGRAM_CHAT_ID, summaryLine, { 
+              parse_mode: 'HTML', 
+              disable_web_page_preview: true 
+            }), { chatId: TELEGRAM_CHAT_ID });
+            
+            recordTrade({
+              t: Date.now(),
+              kind: 'sell',
+              mode: IS_PAPER ? 'paper' : 'live',
+              mint: mintStr,
+              alpha: pos.alpha,
+              exitPriceSol: price,
+              exitUsd,
+              pnlSol: exitSol - pos.costSol,
+              pnlUsd,
+              pnlPct,
+              durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+              tx: tx.txid,
+            });
+            
+            dbg(`[EXIT] Position closed for ${short(mintStr)} | source=alpha | mode=${pos.mode || 'normal'} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(2)}%`);
+            delete openPositions[mintStr];
+            savePositions(serializeLivePositions(openPositions));
+            return;
+          } catch (err: any) {
+            const result = await handleExitError(err, mintStr, pos, 'hard_profit');
+            if (result === 'removed') return;
+            // Continue to other exit checks
+          }
+        }
         
-        const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
-        const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
-        const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+        // Milestone alerts: notify at 10% gain (before +20% exit)
+        // Note: We exit at +20%, so milestones stop at 10%
+        const milestones = [10];
+        const lastMilestone = (pos as any).lastMilestone || 0;
+        const nextMilestone = milestones.find(m => gainPct >= m && m > lastMilestone);
         
-        await tgQueue.enqueue(() => bot.sendMessage(
-          TELEGRAM_CHAT_ID,
-          `✅ Auto-close at +20%: <b>${tokenDisplay}</b>\n` +
-          `Gain: +${gainPct.toFixed(1)}% (target: +20%)\n` +
-          `Entry: ${formatSol(pos.entryPrice)} → Exit: ${formatSol(price)}`,
-          linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
-        ), { chatId: TELEGRAM_CHAT_ID });
-        
-        const summaryLine = solUsd ? 
-          `💡 Bought ${formatUsd(entryUsd)} → Sold ${formatUsd(exitUsd)}  |  ` +
-          `${(pnlUsd >= 0 ? '+' : '')}${formatUsd(pnlUsd)} (${(pnlPct >= 0 ? '+' : '')}${pnlPct.toFixed(1)}%)` : '';
-        await tgQueue.enqueue(() => bot.sendMessage(TELEGRAM_CHAT_ID, summaryLine, { 
-          parse_mode: 'HTML', 
-          disable_web_page_preview: true 
-        }), { chatId: TELEGRAM_CHAT_ID });
-        
-        recordTrade({
-          t: Date.now(),
-          kind: 'sell',
-          mode: IS_PAPER ? 'paper' : 'live',
-          mint: mintStr,
-          alpha: pos.alpha,
-          exitPriceSol: price,
-          exitUsd,
-          pnlSol: exitSol - pos.costSol,
-          pnlUsd,
-          pnlPct,
-          durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
-          tx: tx.txid,
-        });
-        
-        dbg(`[EXIT] Position closed for ${short(mintStr)} | source=alpha | mode=${pos.mode || 'normal'} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(2)}%`);
-        delete openPositions[mintStr];
-        savePositions(serializeLivePositions(openPositions));
-        return;
-      } catch (err: any) {
-        const result = await handleExitError(err, mintStr, pos, 'hard_profit');
-        if (result === 'removed') return;
-        // Continue to other exit checks
+        if (nextMilestone) {
+          (pos as any).lastMilestone = nextMilestone;
+          const solUsd = await getSolUsd();
+          const priceUsd = price * (solUsd || 0);
+          const entryUsd = pos.costSol * (solUsd || 0);
+          
+          // Calculate unrealized PnL correctly: (current price - entry price) * token quantity
+          const tokensHeld = Number(pos.qty);
+          const unrealizedSol = (price - pos.entryPrice) * tokensHeld;
+          const unrealizedUsd = unrealizedSol * (solUsd || 0);
+          
+          // Sanity check: Unrealized should be reasonable
+          if (!Number.isFinite(unrealizedUsd) || Math.abs(unrealizedUsd) > entryUsd * 100) {
+            dbg(`[EXIT] Skipping milestone alert for ${short(mintStr)}: invalid unrealizedUsd (${unrealizedUsd})`);
+          } else {
+            const tag = IS_PAPER ? '[PAPER] ' : '';
+            
+            // Get token name for display
+            const liquidity = await getLiquidityResilient(mintStr).catch(() => null);
+            const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+            
+            await tgQueue.enqueue(() => bot.sendMessage(
+              TELEGRAM_CHAT_ID,
+              `${tag}🎉 Milestone: <b>${tokenDisplay}</b> hit +${nextMilestone}%!\n` +
+              `Current: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
+              `Unrealized: ${(unrealizedUsd >= 0 ? '+' : '')}${formatUsd(unrealizedUsd)} (${(gainPct >= 0 ? '+' : '')}${gainPct.toFixed(1)}%)\n` +
+              `Will auto-close at +20%`,
+              linkRow({ mint: mintStr, alpha: pos.alpha, chartUrl: liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined })
+            ), { chatId: TELEGRAM_CHAT_ID });
+          }
+        }
       }
     }
     
-    // Milestone alerts: notify at 10% gain (before +20% exit)
-    // Note: We exit at +20%, so milestones stop at 10%
-    const milestones = [10];
-    const lastMilestone = (pos as any).lastMilestone || 0;
-    const nextMilestone = milestones.find(m => gainPct >= m && m > lastMilestone);
+    // 5. Crashed token detection (only if price is really untrustworthy and position has been open for a while)
+    // Only compute priceRatio if both price and pos.entryPrice pass isValidPrice and are > 0
+    // Add minimum "time since entry" before using the crashed check (e.g., 5-10 seconds)
+    const timeSinceEntrySec = (Date.now() - pos.entryTime) / 1000;
+    const MIN_TIME_FOR_CRASH_CHECK_SEC = 5; // Don't treat prices in first 5 seconds as "crashed"
     
-    if (nextMilestone) {
-      (pos as any).lastMilestone = nextMilestone;
-      const solUsd = await getSolUsd();
-      const priceUsd = price * (solUsd || 0);
-      const entryUsd = pos.costSol * (solUsd || 0);
+    if (timeSinceEntrySec >= MIN_TIME_FOR_CRASH_CHECK_SEC && isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0) {
+      const priceRatioForCrash = priceRatio !== null ? priceRatio : Math.max(price / pos.entryPrice, pos.entryPrice / price);
+      const priceDropFromEntryPct = ((pos.entryPrice - price) / pos.entryPrice) * 100;
       
-      // Calculate unrealized PnL correctly: (current price - entry price) * token quantity
-      const tokensHeld = Number(pos.qty);
-      const unrealizedSol = (price - pos.entryPrice) * tokensHeld;
-      const unrealizedUsd = unrealizedSol * (solUsd || 0);
-      
-      // Sanity check: Unrealized should be reasonable
-      if (!Number.isFinite(unrealizedUsd) || Math.abs(unrealizedUsd) > entryUsd * 100) {
-        dbg(`[EXIT] Skipping milestone alert for ${short(mintStr)}: invalid unrealizedUsd (${unrealizedUsd})`);
-        continue;
+      // Only trigger if price is extremely unreliable (>15x difference) OR (>10x with >90% drop)
+      if (priceRatioForCrash > 15 || (priceRatioForCrash > 10 && priceDropFromEntryPct > 90)) {
+        const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+        dbg(`[EXIT] crashed_token for ${short(mintStr)} | price=${price.toExponential(3)} entry=${pos.entryPrice.toExponential(3)} priceRatio=${priceRatioForCrash.toFixed(2)} gainPct=${gainPct.toFixed(2)}%`);
+        try {
+          const tx = await swapTokenForSOL(pos.mint, pos.qty);
+          const solUsd = await getSolUsd();
+          const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+          const entryUsd = pos.costSol * (solUsd || 0);
+          const exitUsd = exitSol * (solUsd || 0);
+          const pnlUsd = exitUsd - entryUsd;
+          const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : -100;
+          
+          // Get token name for display
+          const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+          const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+          const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+          
+          await tgQueue.enqueue(() => bot.sendMessage(
+            TELEGRAM_CHAT_ID,
+            `💀 Crashed token auto-exit: <b>${tokenDisplay}</b>\n` +
+            `Price unreliable (${priceRatioForCrash.toFixed(0)}x off) - likely crashed. Forcing exit.`,
+            linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
+          ), { chatId: TELEGRAM_CHAT_ID });
+          
+          recordTrade({
+            t: Date.now(),
+            kind: 'sell',
+            mode: IS_PAPER ? 'paper' : 'live',
+            mint: mintStr,
+            alpha: pos.alpha,
+            exitPriceSol: price, // Use the unreliable price as estimate
+            exitUsd,
+            pnlSol: exitSol - pos.costSol,
+            pnlUsd,
+            pnlPct,
+            durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+            tx: tx.txid,
+          });
+          
+          dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=crashed_token | pnl=${pnlPct.toFixed(1)}%`);
+          delete openPositions[mintStr];
+          savePositions(serializeLivePositions(openPositions));
+          return;
+        } catch (err: any) {
+          const result = await handleExitError(err, mintStr, pos, 'crashed');
+          if (result === 'removed') return;
+          continue; // Retry on next iteration
+        }
       }
-      
-      const tag = IS_PAPER ? '[PAPER] ' : '';
-      
-      // Get token name for display
-      const liquidity = await getLiquidityResilient(mintStr).catch(() => null);
-      const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
-      
-      await tgQueue.enqueue(() => bot.sendMessage(
-        TELEGRAM_CHAT_ID,
-        `${tag}🎉 Milestone: <b>${tokenDisplay}</b> hit +${nextMilestone}%!\n` +
-        `Current: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
-        `Unrealized: ${(unrealizedUsd >= 0 ? '+' : '')}${formatUsd(unrealizedUsd)} (${(gainPct >= 0 ? '+' : '')}${gainPct.toFixed(1)}%)\n` +
-        `Will auto-close at +20%`,
-        linkRow({ mint: mintStr, alpha: pos.alpha, chartUrl: liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined })
-      ), { chatId: TELEGRAM_CHAT_ID });
     }
   }
 }
@@ -3835,7 +3923,7 @@ async function scanRecentAlphaTransactions() {
         while (retries > 0 && !success) {
           try {
             seenSignatures.add(sigInfo.signature); // Mark as seen before processing
-            await handleAlphaTransaction(sigInfo.signature, alpha, 'active');
+            await handleAlphaTransaction(sigInfo.signature, alpha, 'active', 'poll');
             success = true;
           } catch (err: any) {
             retries--;
@@ -3867,7 +3955,7 @@ async function scanRecentAlphaTransactions() {
             if (seenSignatures.has(sigInfo.signature)) continue;
             try {
               seenSignatures.add(sigInfo.signature);
-              await handleAlphaTransaction(sigInfo.signature, alpha, 'active');
+              await handleAlphaTransaction(sigInfo.signature, alpha, 'active', 'poll');
             } catch (retryErr: any) {
               dbg(`[SCAN] Retry failed for ${sigInfo.signature.slice(0, 8)}: ${retryErr.message || retryErr}`);
             }

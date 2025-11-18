@@ -13,7 +13,8 @@
     "stop": "./scripts/stop.sh",
     "pm2:start": "pm2 start 'tsx index.ts' --name alpha-snipes-paper --time",
     "logs": "pm2 logs alpha-snipes-paper --lines 80",
-    "docs:check": "node -e \"require('fs').readdirSync('./docs'); console.log('✅ Docs OK');\""
+    "docs:check": "node -e \"require('fs').readdirSync('./docs'); console.log('✅ Docs OK');\"",
+    "alpha:bench": "tsx tools/alpha_speed_benchmark.ts"
   },
   "dependencies": {
     "dotenv": "^16.3.1",
