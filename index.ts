@@ -344,9 +344,9 @@ async function safeGetParsedTx(sig: string): Promise<{ tx: any | null; rpcPath: 
     const { result: tx, rpcPath } = await withRpcFailover(
       async (conn) => {
         return await conn.getParsedTransaction(sig, {
-          maxSupportedTransactionVersion: 0,
-          commitment: "confirmed",
-        });
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
       },
       `getParsedTransaction:${short(sig)}`
     );
@@ -365,9 +365,9 @@ async function safeGetParsedTx(sig: string): Promise<{ tx: any | null; rpcPath: 
         const { result: tx2, rpcPath } = await withRpcFailover(
           async (conn) => {
             return await conn.getTransaction(sig, {
-              maxSupportedTransactionVersion: 0,
-              commitment: "confirmed",
-            } as any);
+          maxSupportedTransactionVersion: 0,
+          commitment: "confirmed",
+        } as any);
           },
           `getTransaction:${short(sig)}`
         );
@@ -385,7 +385,7 @@ async function safeGetParsedTx(sig: string): Promise<{ tx: any | null; rpcPath: 
           const raw = await rawGetParsedTxBySig(rpcUrl, sig);
           if (raw) {
             return { tx: raw, rpcPath: rpcUrl === PRIMARY_RPC_URL ? 'primary' : 'secondary' };
-          }
+        }
         }
         return { tx: null, rpcPath: null };
       }
@@ -399,7 +399,7 @@ async function safeGetParsedTx(sig: string): Promise<{ tx: any | null; rpcPath: 
         const raw = await rawGetParsedTxBySig(rpcUrl, sig);
         if (raw) {
           return { tx: raw, rpcPath: rpcUrl === PRIMARY_RPC_URL ? 'primary' : 'secondary' };
-        }
+      }
       }
       return { tx: null, rpcPath: null };
     }
@@ -1078,7 +1078,7 @@ bot.onText(/^\/open$/, async (msg) => {
     ]).catch(() => null);
     
     const { pnlPct, reliability } = computePnlPct(pos, currentPrice);
-    const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
+      const durationMin = Math.floor((Date.now() - pos.entryTime) / 60000);
     
     if (reliability === "unavailable" || pnlPct === null) {
       // Show position info even if price fetch fails
@@ -1093,16 +1093,16 @@ bot.onText(/^\/open$/, async (msg) => {
     // Sanity check: If price is way off from entry (>10x difference), likely bad price
     if (entryPrice > 0 && currentPrice) {
       const priceRatio = Math.max(currentPrice / entryPrice, entryPrice / currentPrice);
-      if (priceRatio > 10) {
+    if (priceRatio > 10) {
         const currentPriceFormatted = currentPrice < 0.000001
           ? `${currentPrice.toExponential(6)} SOL`
           : formatSol(currentPrice);
-        lines.push(
-          `<a href="${chartUrl}">${tokenDisplay}</a>  [price unreliable]\n` +
+      lines.push(
+        `<a href="${chartUrl}">${tokenDisplay}</a>  [price unreliable]\n` +
           `  Entry: ${entryPriceFormatted}  |  Current: [unreliable]\n` +
           `  ⏳ EARLY TP  |  <code>${esc(String(durationMin))}</code>m\n`
-        );
-        continue;
+      );
+      continue;
       }
     }
     
@@ -1510,14 +1510,14 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     
     // CRITICAL: Check if liquidity is available before proceeding
     if (!liquidity.ok || liquidityUsd <= 0) {
-      await sendCommand(
-        msg.chat.id,
+        await sendCommand(
+          msg.chat.id,
         `⛔️ Force buy aborted: <b>no liquidity</b>\n\n` +
         `Triangulation found no liquidity for <code>${short(mintStr)}</code>.\n` +
         `Liquidity: $${liquidityUsd.toFixed(2)} (ok=${liquidity.ok})\n\n` +
         `The token has no available liquidity pools or all providers failed.`
-      );
-      return;
+        );
+        return;
     }
     
     // Step 2: Determine buy amount (default 1 SOL, allow custom override)
@@ -1694,12 +1694,28 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
       ? `${finalEntryPrice.toExponential(6)} SOL/token`
       : `${formatSol(finalEntryPrice)}/token`;
     
+    // DEBUG: Log card details before sending
+    dbg(
+      `[FORCE_BUY][DEBUG][CARD] mint=${short(mintStr)} ` +
+      `entryPrice=${finalEntryPrice.toExponential(8)} SOL/token ` +
+      `costSol=${buySol} ` +
+      `liquidityUsd=$${liquidityUsd.toFixed(2)} ` +
+      `provider=${liquiditySource} ` +
+      `tokens=${tokenAmount.toLocaleString()}`
+    );
+    
+    // Ensure we're using real values (not 0 or defaults)
+    const cardEntryPrice = finalEntryPrice > 0 ? finalEntryPrice : pos.entryPrice;
+    const cardLiquidityUsd = liquidityUsd > 0 ? liquidityUsd : (pos.entryLiquidityUsd || 0);
+    const cardProviderLabel = liquiditySource !== 'unknown' ? liquiditySourceLabel : '';
+    
     await tgQueue.enqueue(() => bot.sendMessage(
       TELEGRAM_CHAT_ID,
       `${tag}🔨 Force buy: <b>${tokenDisplay}</b>\n` +
-      `Entry: ${entryPriceFormatted}${solUsd ? ` (~${formatUsd(entryPriceUsd)})` : ''}\n` +
-      `Size: ${formatSol(buySol)}${solUsd ? ` (~${formatUsd(entryUsd)})` : ''}\n` +
-      `Liquidity: ${formatUsd(liquidityUsd)}${liquiditySourceLabel}${poolInfo}\n` +
+      `Source: force_buy\n` +
+      `Entry Price: ${cardEntryPrice < 0.000001 ? cardEntryPrice.toExponential(6) : formatSol(cardEntryPrice)}/token${solUsd ? ` (~${formatUsd(cardEntryPrice * (solUsd || 0))})` : ''}\n` +
+      `Cost: ${formatSol(buySol)} SOL${solUsd ? ` (~${formatUsd(entryUsd)})` : ''}\n` +
+      `Liquidity: ${formatUsd(cardLiquidityUsd)}${cardProviderLabel}${poolInfo}\n` +
       `Tokens: ${tokenAmount.toLocaleString()}`,
       linkRow({ mint: mintStr, alpha: 'force_buy', tx: tx.txid, chartUrl })
     ), { chatId: TELEGRAM_CHAT_ID });
@@ -2383,9 +2399,9 @@ setInterval(async () => {
       const { result: sigs } = await withRpcFailover(
         async (conn) => {
           return await conn.getSignaturesForAddress(pk, {
-            limit: 10, // Reduced to focus on recent transactions
-            until: undefined,
-          });
+        limit: 10, // Reduced to focus on recent transactions
+        until: undefined,
+      });
         },
         `getSignaturesForAddress:${short(alpha)}`
       );
@@ -2891,9 +2907,9 @@ async function executeCopyTradeFromSignal(opts: {
     if (!planned.entryPrice || planned.entryPrice <= 0 || !Number.isFinite(planned.entryPrice)) {
       console.error(`[ENTRY][FATAL] planEntryWithQuote returned invalid entryPrice: ${planned.entryPrice} for ${short(mintStr)}`);
       await alert(`⛔️ Entry aborted: Invalid entry price calculated for <code>${short(mintStr)}</code>`);
-      return 'skipped';
-    }
-    
+        return 'skipped';
+      }
+      
     const entryTime = Date.now();
     let qty = planned.tokens;
     let finalEntryPrice = planned.entryPrice;
@@ -3125,16 +3141,16 @@ async function executeCopyTradeFromSignal(opts: {
       if (!isValidPrice(fallbackPrice)) {
         throw new Error(`[ENTRY][PRICE][BUG] Both displayEntryPrice and finalEntryPrice are invalid - this should never happen`);
       }
-      
-      await tgQueue.enqueue(
-        () =>
-          bot.sendMessage(
-            TELEGRAM_CHAT_ID,
+    
+    await tgQueue.enqueue(
+      () =>
+        bot.sendMessage(
+        TELEGRAM_CHAT_ID,
             buildMessage(fallbackPrice),
-            linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
-          ),
-        { chatId: TELEGRAM_CHAT_ID }
-      );
+          linkRow({ mint: mintStr, alpha, tx: buy.txid, chartUrl })
+        ),
+      { chatId: TELEGRAM_CHAT_ID }
+    );
     } else {
       await tgQueue.enqueue(
         () =>
@@ -3722,112 +3738,129 @@ async function manageExit(mintStr: string) {
     }
     
     // 4. Auto-close at +20% gain (check BEFORE crashed_token to allow TP on sane prices)
-    // Only check if price is reasonable (priceRatio <= 10 or not calculated)
-    const priceRatioForTP = priceRatio !== null ? priceRatio : (isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0 ? Math.max(price / pos.entryPrice, pos.entryPrice / price) : 1);
+    // Use safe P&L calculation to ensure we never trigger on null prices
+    const { computePnlPct } = await import('./lib/pricing.js');
+    const { pnlPct: safePnlPct, reliability: tpReliability } = computePnlPct(pos, price);
     
-    if (priceRatioForTP <= 10) {
-      const gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+    // Only proceed if we have valid prices and a real numeric P&L
+    if (tpReliability === "unavailable" || safePnlPct === null) {
+      dbg(`[EXIT][SKIP][NO_PRICE] mint=${short(mintStr)} reason="price unavailable for TP check" entry=${pos.entryPrice} current=${price}`);
+    } else if (price === null || !price || price <= 0) {
+      dbg(`[EXIT][SKIP][NO_PRICE] mint=${short(mintStr)} reason="price is null or invalid for TP" entry=${pos.entryPrice} current=${price}`);
+    } else if (!pos.entryPrice || pos.entryPrice <= 0 || !Number.isFinite(pos.entryPrice)) {
+      dbg(`[EXIT][SKIP][NO_PRICE] mint=${short(mintStr)} reason="entryPrice is invalid for TP" entry=${pos.entryPrice} current=${price}`);
+    } else if (!Number.isFinite(safePnlPct)) {
+      dbg(`[EXIT][SKIP][NO_PRICE] mint=${short(mintStr)} reason="pnlPct is not finite for TP" pnlPct=${safePnlPct} entry=${pos.entryPrice} current=${price}`);
+    } else {
+      // Only check if price is reasonable (priceRatio <= 10 or not calculated)
+      const priceRatioForTP = priceRatio !== null ? priceRatio : (isValidPrice(price) && isValidPrice(pos.entryPrice) && pos.entryPrice > 0 ? Math.max(price / pos.entryPrice, pos.entryPrice / price) : 1);
       
-      // Debug: Log gain calculation
-      dbg(`[EXIT][DEBUG] gainPct=${gainPct.toFixed(2)}% for ${short(mintStr)} (price=${price.toExponential(3)}, entry=${pos.entryPrice.toExponential(3)})`);
-      
-      // Sanity check: Gain percentage should be reasonable (between -99% and +10000%)
-      if (!Number.isFinite(gainPct) || gainPct < -99 || gainPct > 10000) {
-        dbg(`[EXIT] Skipping profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct}), price=${price}, entryPrice=${pos.entryPrice}`);
-      } else {
-        // Exit at +20% gain
-        if (gainPct >= 20) {
-          dbg(`[EXIT] Auto-close at +20% target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
-          try {
-            const tx = await swapTokenForSOL(pos.mint, pos.qty);
-            const solUsd = await getSolUsd();
-            const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
-            const entryUsd = pos.costSol * (solUsd || 0);
-            const exitUsd = exitSol * (solUsd || 0);
-            const pnlUsd = exitUsd - entryUsd;
-            const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : 0;
-            
-            const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
-            const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
-            const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
-            
-            await tgQueue.enqueue(() => bot.sendMessage(
-              TELEGRAM_CHAT_ID,
-              `✅ Auto-close at +20%: <b>${tokenDisplay}</b>\n` +
-              `Gain: +${gainPct.toFixed(1)}% (target: +20%)\n` +
-              `Entry: ${formatSol(pos.entryPrice)} → Exit: ${formatSol(price)}`,
-              linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
-            ), { chatId: TELEGRAM_CHAT_ID });
-            
-            const summaryLine = solUsd ? 
-              `💡 Bought ${formatUsd(entryUsd)} → Sold ${formatUsd(exitUsd)}  |  ` +
-              `${(pnlUsd >= 0 ? '+' : '')}${formatUsd(pnlUsd)} (${(pnlPct >= 0 ? '+' : '')}${pnlPct.toFixed(1)}%)` : '';
-            await tgQueue.enqueue(() => bot.sendMessage(TELEGRAM_CHAT_ID, summaryLine, { 
-              parse_mode: 'HTML', 
-              disable_web_page_preview: true 
-            }), { chatId: TELEGRAM_CHAT_ID });
-            
-            recordTrade({
-              t: Date.now(),
-              kind: 'sell',
-              mode: IS_PAPER ? 'paper' : 'live',
-              mint: mintStr,
-              alpha: pos.alpha,
-              exitPriceSol: price,
-              exitUsd,
-              pnlSol: exitSol - pos.costSol,
-              pnlUsd,
-              pnlPct,
-              durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
-              tx: tx.txid,
-            });
-            
-            dbg(`[EXIT] Position closed for ${short(mintStr)} | source=alpha | mode=${pos.mode || 'normal'} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(2)}%`);
-            delete openPositions[mintStr];
-            savePositions(serializeLivePositions(openPositions));
-            return;
-          } catch (err: any) {
-            const result = await handleExitError(err, mintStr, pos, 'hard_profit');
-            if (result === 'removed') return;
-            // Continue to other exit checks
+      if (priceRatioForTP <= 10) {
+        const gainPct = safePnlPct; // Use safe P&L from computePnlPct
+        
+        // Debug: Log gain calculation
+        dbg(`[EXIT][DEBUG] gainPct=${gainPct.toFixed(2)}% for ${short(mintStr)} (price=${price.toExponential(3)}, entry=${pos.entryPrice.toExponential(3)}, source=${pos.source || 'unknown'})`);
+        
+        // Sanity check: Gain percentage should be reasonable (between -99% and +10000%)
+        if (!Number.isFinite(gainPct) || gainPct < -99 || gainPct > 10000) {
+          dbg(`[EXIT] Skipping profit calculations for ${short(mintStr)}: invalid gainPct (${gainPct}), price=${price}, entryPrice=${pos.entryPrice}`);
+        } else {
+          // Exit at +20% gain
+          if (gainPct >= 20) {
+            dbg(`[EXIT] Auto-close at +20% target hit for ${short(mintStr)}: ${gainPct.toFixed(1)}%`);
+            try {
+              const tx = await swapTokenForSOL(pos.mint, pos.qty);
+              const solUsd = await getSolUsd();
+              const exitSol = tx.solOutLamports ? lamportsToSol(tx.solOutLamports) : 0;
+              const entryUsd = pos.costSol * (solUsd || 0);
+              const exitUsd = exitSol * (solUsd || 0);
+              const pnlUsd = exitUsd - entryUsd;
+              const pnlPct = entryUsd > 0 ? ((exitUsd - entryUsd) / entryUsd) * 100 : 0;
+              
+              const liquidity = await getLiquidityResilient(mintStr, { retries: 1, cacheMaxAgeMs: 300_000 }).catch(() => null);
+              const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+              const chartUrl = liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined;
+              
+              await tgQueue.enqueue(() => bot.sendMessage(
+                TELEGRAM_CHAT_ID,
+                `✅ Auto-close at +20%: <b>${tokenDisplay}</b>\n` +
+                `Gain: +${gainPct.toFixed(1)}% (target: +20%)\n` +
+                `Entry: ${formatSol(pos.entryPrice)} → Exit: ${formatSol(price)}`,
+                linkRow({ mint: mintStr, alpha: pos.alpha, tx: tx.txid, chartUrl })
+              ), { chatId: TELEGRAM_CHAT_ID });
+              
+              const summaryLine = solUsd ? 
+                `💡 Bought ${formatUsd(entryUsd)} → Sold ${formatUsd(exitUsd)}  |  ` +
+                `${(pnlUsd >= 0 ? '+' : '')}${formatUsd(pnlUsd)} (${(pnlPct >= 0 ? '+' : '')}${pnlPct.toFixed(1)}%)` : '';
+              await tgQueue.enqueue(() => bot.sendMessage(TELEGRAM_CHAT_ID, summaryLine, { 
+                parse_mode: 'HTML', 
+                disable_web_page_preview: true 
+              }), { chatId: TELEGRAM_CHAT_ID });
+              
+              recordTrade({
+                t: Date.now(),
+                kind: 'sell',
+                mode: IS_PAPER ? 'paper' : 'live',
+                mint: mintStr,
+                alpha: pos.alpha,
+                exitPriceSol: price,
+                exitUsd,
+                pnlSol: exitSol - pos.costSol,
+                pnlUsd,
+                pnlPct,
+                durationSec: Math.floor((Date.now() - pos.entryTime) / 1000),
+                tx: tx.txid,
+              });
+              
+              dbg(`[EXIT] Position closed for ${short(mintStr)} | source=${pos.source || 'unknown'} | mode=${pos.mode || 'normal'} | reason=hard_profit_20pct | pnl=${pnlPct.toFixed(2)}%`);
+              delete openPositions[mintStr];
+              savePositions(serializeLivePositions(openPositions));
+              return;
+            } catch (err: any) {
+              const result = await handleExitError(err, mintStr, pos, 'hard_profit');
+              if (result === 'removed') return;
+              // Continue to other exit checks
+            }
           }
-        }
-        
-        // Milestone alerts: notify at 10% gain (before +20% exit)
-        // Note: We exit at +20%, so milestones stop at 10%
-        const milestones = [10];
-        const lastMilestone = (pos as any).lastMilestone || 0;
-        const nextMilestone = milestones.find(m => gainPct >= m && m > lastMilestone);
-        
-        if (nextMilestone) {
-          (pos as any).lastMilestone = nextMilestone;
-          const solUsd = await getSolUsd();
-          const priceUsd = price * (solUsd || 0);
-          const entryUsd = pos.costSol * (solUsd || 0);
+    
+          // Milestone alerts: notify at 10% gain (before +20% exit)
+          // Note: We exit at +20%, so milestones stop at 10%
+          // Works for all sources (alpha, watchlist, force_buy)
+          const milestones = [10];
+          const lastMilestone = (pos as any).lastMilestone || 0;
+          const nextMilestone = milestones.find(m => gainPct >= m && m > lastMilestone);
           
-          // Calculate unrealized PnL correctly: (current price - entry price) * token quantity
-          const tokensHeld = Number(pos.qty);
-          const unrealizedSol = (price - pos.entryPrice) * tokensHeld;
-          const unrealizedUsd = unrealizedSol * (solUsd || 0);
-          
-          // Sanity check: Unrealized should be reasonable
-          if (!Number.isFinite(unrealizedUsd) || Math.abs(unrealizedUsd) > entryUsd * 100) {
-            dbg(`[EXIT] Skipping milestone alert for ${short(mintStr)}: invalid unrealizedUsd (${unrealizedUsd})`);
-          } else {
-            const tag = IS_PAPER ? '[PAPER] ' : '';
+          if (nextMilestone) {
+            dbg(`[EXIT][MILESTONE] ${short(mintStr)} hit +${nextMilestone}% milestone (source=${pos.source || 'unknown'}, gainPct=${gainPct.toFixed(2)}%)`);
+            (pos as any).lastMilestone = nextMilestone;
+            const solUsd = await getSolUsd();
+            const priceUsd = price * (solUsd || 0);
+            const entryUsd = pos.costSol * (solUsd || 0);
             
-            // Get token name for display
-            const liquidity = await getLiquidityResilient(mintStr).catch(() => null);
-            const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+            // Calculate unrealized PnL correctly: (current price - entry price) * token quantity
+            const tokensHeld = Number(pos.qty);
+            const unrealizedSol = (price - pos.entryPrice) * tokensHeld;
+            const unrealizedUsd = unrealizedSol * (solUsd || 0);
             
-            await tgQueue.enqueue(() => bot.sendMessage(
-              TELEGRAM_CHAT_ID,
-              `${tag}🎉 Milestone: <b>${tokenDisplay}</b> hit +${nextMilestone}%!\n` +
-              `Current: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
-              `Unrealized: ${(unrealizedUsd >= 0 ? '+' : '')}${formatUsd(unrealizedUsd)} (${(gainPct >= 0 ? '+' : '')}${gainPct.toFixed(1)}%)\n` +
-              `Will auto-close at +20%`,
-              linkRow({ mint: mintStr, alpha: pos.alpha, chartUrl: liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined })
-            ), { chatId: TELEGRAM_CHAT_ID });
+            // Sanity check: Unrealized should be reasonable
+            if (!Number.isFinite(unrealizedUsd) || Math.abs(unrealizedUsd) > entryUsd * 100) {
+              dbg(`[EXIT] Skipping milestone alert for ${short(mintStr)}: invalid unrealizedUsd (${unrealizedUsd})`);
+            } else {
+              const tag = IS_PAPER ? '[PAPER] ' : '';
+              
+              // Get token name for display
+              const liquidity = await getLiquidityResilient(mintStr).catch(() => null);
+              const tokenDisplay = liquidity?.tokenName || liquidity?.tokenSymbol || short(mintStr);
+              
+              await tgQueue.enqueue(() => bot.sendMessage(
+                TELEGRAM_CHAT_ID,
+                `${tag}🎉 Milestone: <b>${tokenDisplay}</b> hit +${nextMilestone}%!\n` +
+                `Current: ${formatSol(price)}${solUsd ? ` (~${formatUsd(priceUsd)})` : ''}\n` +
+                `Unrealized: ${(unrealizedUsd >= 0 ? '+' : '')}${formatUsd(unrealizedUsd)} (${(gainPct >= 0 ? '+' : '')}${gainPct.toFixed(1)}%)\n` +
+                `Will auto-close at +20%`,
+                linkRow({ mint: mintStr, alpha: pos.alpha, chartUrl: liquidity?.pairAddress ? `https://dexscreener.com/solana/${liquidity.pairAddress}` : undefined })
+              ), { chatId: TELEGRAM_CHAT_ID });
+            }
           }
         }
       }
@@ -4323,9 +4356,9 @@ async function scanRecentAlphaTransactions() {
       const { result: sigs } = await withRpcFailover(
         async (conn) => {
           return await conn.getSignaturesForAddress(pk, {
-            limit: 100, // Increased from 50 to cover longer time window
-            until: undefined,
-          });
+        limit: 100, // Increased from 50 to cover longer time window
+        until: undefined,
+      });
         },
         `getSignaturesForAddress:${short(alpha)}:scan`
       );
@@ -4367,9 +4400,9 @@ async function scanRecentAlphaTransactions() {
           const { result: sigs } = await withRpcFailover(
             async (conn) => {
               return await conn.getSignaturesForAddress(pk, {
-                limit: 100,
-                until: undefined,
-              });
+            limit: 100,
+            until: undefined,
+          });
             },
             `getSignaturesForAddress:${short(alpha)}:scan:retry`
           );

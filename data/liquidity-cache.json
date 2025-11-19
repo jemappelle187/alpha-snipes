@@ -37,7 +37,7 @@
   },
   "FvRTNcN37YLpQZPJGyaHuyyXxyf3GDhTo6rY4tieNvET": {
     "liquidityUsd": 0.26,
-    "ts": 1763510549374
+    "ts": 1763512499426
   },
   "6ZG18YbPP1cHM5EcEzvVHgUmutArc8LkTemChvzDcvV9": {
     "liquidityUsd": 11.88,
@@ -126,5 +126,17 @@
   "8tNJkcpK1EupFvtTEfJwtiNVAA6bGLte3Er8HC4mGHwx": {
     "liquidityUsd": 0.12,
     "ts": 1763509457439
+  },
+  "5MCgJHRpmmLWzX26Yxvv1WuVWWauo45iUx6NykXqSDsF": {
+    "liquidityUsd": 75924.82,
+    "ts": 1763512252310
+  },
+  "2PsxJBCcHsHdWvnFWTqLysdrigku9aqbpq2mRnm2re2p": {
+    "liquidityUsd": 0.18,
+    "ts": 1763512469471
+  },
+  "FyAYRTHJKLGSSzEDrSPS9exSzx3APF17jBGESFvB8ffp": {
+    "liquidityUsd": 0.36,
+    "ts": 1763512369146
   }
 }
