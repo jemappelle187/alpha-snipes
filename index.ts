@@ -3662,8 +3662,9 @@ async function manageExit(mintStr: string) {
     }
     
     // 3. Max loss protection: force exit if down >10% from entry
-    const { computePnlPct } = await import('./lib/pricing.js');
-    const { pnlPct, reliability } = computePnlPct(pos, price);
+    // Import computePnlPct once at the start of exit checks (reused for TP checks later)
+    const { computePnlPct: computePnlPctHelper } = await import('./lib/pricing.js');
+    const { pnlPct, reliability } = computePnlPctHelper(pos, price);
     
     // CRITICAL: Only trigger max-loss when we have valid prices and a real numeric P&L
     if (reliability === "unavailable" || pnlPct === null) {
@@ -3739,8 +3740,8 @@ async function manageExit(mintStr: string) {
     
     // 4. Auto-close at +20% gain (check BEFORE crashed_token to allow TP on sane prices)
     // Use safe P&L calculation to ensure we never trigger on null prices
-    const { computePnlPct } = await import('./lib/pricing.js');
-    const { pnlPct: safePnlPct, reliability: tpReliability } = computePnlPct(pos, price);
+    // Reuse computePnlPctHelper imported above
+    const { pnlPct: safePnlPct, reliability: tpReliability } = computePnlPctHelper(pos, price);
     
     // Only proceed if we have valid prices and a real numeric P&L
     if (tpReliability === "unavailable" || safePnlPct === null) {
