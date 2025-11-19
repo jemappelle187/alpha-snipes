@@ -1630,8 +1630,9 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
       source: 'force' as CopyTradeSource, // Track source for exit logs
     };
     
-    // ABSOLUTE FINAL CHECK: Never create position with entryPrice = 0
+    // FINAL SANITY CHECK: Never create position with invalid values
     if (!pos.entryPrice || pos.entryPrice <= 0 || !Number.isFinite(pos.entryPrice)) {
+      console.error(`[ENTRY][SKIP][INVALID_ENTRY] mint=${short(mintStr)} reason="entryPrice invalid" entryPrice=${pos.entryPrice}`);
       await sendCommand(
         msg.chat.id,
         `⛔️ Position creation aborted: Invalid entry price (${pos.entryPrice}) for <code>${short(mintStr)}</code>`
@@ -1640,9 +1641,19 @@ bot.onText(/^\/force_buy\s+([1-9A-HJ-NP-Za-km-z]{32,44})(?:\s+([\d.]+))?$/, asyn
     }
     
     if (pos.qty <= 0n) {
+      console.error(`[ENTRY][SKIP][INVALID_ENTRY] mint=${short(mintStr)} reason="tokens invalid" qty=${pos.qty}`);
       await sendCommand(
         msg.chat.id,
         `⛔️ Position creation aborted: Invalid token amount for <code>${short(mintStr)}</code>`
+      );
+      return;
+    }
+    
+    if (!pos.costSol || pos.costSol <= 0 || !Number.isFinite(pos.costSol)) {
+      console.error(`[ENTRY][SKIP][INVALID_ENTRY] mint=${short(mintStr)} reason="costSol invalid" costSol=${pos.costSol}`);
+      await sendCommand(
+        msg.chat.id,
+        `⛔️ Position creation aborted: Invalid cost (${pos.costSol}) for <code>${short(mintStr)}</code>`
       );
       return;
     }
@@ -3034,6 +3045,25 @@ async function executeCopyTradeFromSignal(opts: {
       return 'skipped';
     }
     
+    // FINAL SANITY CHECK: Never create position with invalid values
+    if (!finalEntryPrice || finalEntryPrice <= 0 || !Number.isFinite(finalEntryPrice)) {
+      console.error(`[ENTRY][SKIP][INVALID_ENTRY] mint=${short(mintStr)} reason="entryPrice invalid" entryPrice=${finalEntryPrice}`);
+      await alert(`⛔️ Position creation aborted: Invalid entry price (${finalEntryPrice}) for <code>${short(mintStr)}</code>`);
+      return 'skipped';
+    }
+    
+    if (qty <= 0n) {
+      console.error(`[ENTRY][SKIP][INVALID_ENTRY] mint=${short(mintStr)} reason="tokens invalid" qty=${qty}`);
+      await alert(`⛔️ Position creation aborted: Invalid token amount for <code>${short(mintStr)}</code>`);
+      return 'skipped';
+    }
+    
+    if (!buySol || buySol <= 0 || !Number.isFinite(buySol)) {
+      console.error(`[ENTRY][SKIP][INVALID_ENTRY] mint=${short(mintStr)} reason="costSol invalid" costSol=${buySol}`);
+      await alert(`⛔️ Position creation aborted: Invalid cost (${buySol}) for <code>${short(mintStr)}</code>`);
+      return 'skipped';
+    }
+    
     // DEBUG: Log full position details before creation
     dbg(
       `[ENTRY][DEBUG][POSITION] mint=${short(mintStr)} ` +
@@ -3074,8 +3104,11 @@ async function executeCopyTradeFromSignal(opts: {
     
     const buildMessage = (priceToDisplay: number) => {
       const displayEntryPriceUsd = priceToDisplay * (solUsd || 0);
+      // Add alpha info if available (for alpha copy-trades and watchlist entries from alpha signals)
+      const alphaLine = alpha && alpha !== 'force_buy' ? `Alpha: <code>${short(alpha)}</code>\n` : '';
       return (
         `${msgPrefix} <b>${tokenDisplay}</b> <code>${short(mintStr)}</code>\n` +
+        `${alphaLine}` +
         `Entry Price: ${formatSol(priceToDisplay)} SOL/token${
           solUsd ? ` (~${formatUsd(displayEntryPriceUsd)})` : ''
         }\n` +
@@ -3616,9 +3649,19 @@ async function manageExit(mintStr: string) {
     const { computePnlPct } = await import('./lib/pricing.js');
     const { pnlPct, reliability } = computePnlPct(pos, price);
     
+    // CRITICAL: Only trigger max-loss when we have valid prices and a real numeric P&L
     if (reliability === "unavailable" || pnlPct === null) {
-      // No reliable price - skip max loss check
-      dbg(`[EXIT] Skipping max loss check for ${short(mintStr)}: price unavailable (entry=${pos.entryPrice}, current=${price})`);
+      // No reliable price - skip max loss check (do NOT treat as -100% loss)
+      dbg(`[EXIT][SKIP][NO_PRICE] mint=${short(mintStr)} reason="price unavailable" entry=${pos.entryPrice} current=${price}`);
+    } else if (price === null || !price || price <= 0) {
+      // Price is explicitly null or invalid - skip (do NOT treat as -100% loss)
+      dbg(`[EXIT][SKIP][NO_PRICE] mint=${short(mintStr)} reason="price is null or invalid" entry=${pos.entryPrice} current=${price}`);
+    } else if (!pos.entryPrice || pos.entryPrice <= 0 || !Number.isFinite(pos.entryPrice)) {
+      // Entry price is invalid - skip (do NOT treat as -100% loss)
+      dbg(`[EXIT][SKIP][NO_PRICE] mint=${short(mintStr)} reason="entryPrice is invalid" entry=${pos.entryPrice} current=${price}`);
+    } else if (!Number.isFinite(pnlPct)) {
+      // P&L is not a valid number - skip (do NOT treat as -100% loss)
+      dbg(`[EXIT][SKIP][NO_PRICE] mint=${short(mintStr)} reason="pnlPct is not finite" pnlPct=${pnlPct} entry=${pos.entryPrice} current=${price}`);
     } else if (pnlPct <= MAX_LOSS_PCT) {
       const currentLossPct = pnlPct;
       try {
